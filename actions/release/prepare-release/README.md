@@ -17,10 +17,12 @@ Preparation creates `refs/tags/<next_release_tag>` at the exact pushed SHA
 before creating the draft. GitHub accepts duplicate drafts and does not create a
 tag when a draft names a nonexistent tag, so the tag ref is the atomic version
 claim. The draft stores the source SHA, version, resolved plan, attempt ID, and
-release notes. A retry finds that draft and reuses its saved plan and notes. If a
-run stops after creating the tag but before creating the draft, a retry can
-finish the attempt only when the existing tag points to the same source SHA. A
-different source or plan fails closed. Deleting a draft does not free the tag.
+release notes. A retry finds that draft and reuses its saved plan and notes. The
+planner also returns that recorded plan after publication, so rerunning the push
+reuses the same release ID, version, and tag. If a run stops after creating the
+tag but before creating the draft, a retry can finish the attempt only when the
+existing tag points to the same source SHA. A different source or plan fails
+closed. Deleting a draft does not free the tag.
 
 Notes are generated from the unreleased conventional commit history through the
 exact pushed SHA. Breaking changes, features, and fixes are grouped, and repeated

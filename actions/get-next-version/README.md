@@ -74,6 +74,8 @@ candidate branch, and candidate branch assignments cannot overlap.
 
 The planner also reads full-version Git tags as durable claims. Stable planning
 advances the required bump to the next unused patch when another source already
-owns the proposed tag. Candidate planning skips claimed channel counters, while
-reruns for the exact claimed source keep their candidate version. This also
-covers a run interrupted after creating the tag but before creating its draft.
+owns the proposed tag. Candidate planning skips claimed channel counters. For
+either channel, a release attempt recorded on a draft or published release takes
+precedence over a recalculated plan for the same source SHA and configuration.
+This preserves the selected version when a run is retried after the stable
+baseline has advanced or after creating the tag but before creating the draft.

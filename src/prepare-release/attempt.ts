@@ -50,6 +50,15 @@ export interface AssetManifest {
   checksum_asset: StagedAsset | null;
 }
 
+export interface RegistryReceipt {
+  schema_version: 1;
+  artifacts: Array<{
+    registry: string;
+    reference: string;
+    digest: string;
+  }>;
+}
+
 export interface AttemptRecord {
   schema_version: 1;
   attempt_id: string;
@@ -58,6 +67,7 @@ export interface AttemptRecord {
   source_sha: string;
   plan: ReleasePlan;
   asset_manifest?: AssetManifest;
+  registry_receipt?: RegistryReceipt;
 }
 
 export const attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";

@@ -27251,9 +27251,18 @@ function createRelease(args) {
   const { octokit, ...parameters } = args;
   return octokit.rest.repos.createRelease(parameters);
 }
+function getReleaseAsset(args) {
+  return args.octokit.rest.repos.getReleaseAsset({
+    owner: args.owner,
+    repo: args.repo,
+    asset_id: args.assetId,
+    headers: { accept: "application/octet-stream" }
+  });
+}
 
 // src/prepare-release/attempt.ts
 var attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
+var attemptAssetName = "gxmmx-release-attempt.json";
 var parser = new CommitParser();
 function attemptId(tag, sha) {
   return `${tag.replace(/[^A-Za-z0-9.-]/g, "-")}@${sha.slice(0, 12)}`;
@@ -27269,6 +27278,39 @@ function parseAttempt(body) {
   } catch {
     return null;
   }
+}
+function parseAttemptJson(value) {
+  try {
+    const record = JSON.parse(value);
+    return record.schema_version === 1 && record.attempt_id ? record : null;
+  } catch {
+    return null;
+  }
+}
+async function readAttemptRecord(args) {
+  const { octokit, owner, repo, release } = args;
+  const asset = release.assets?.find((item) => item.name === attemptAssetName);
+  const bodyRecord = parseAttempt(release.body);
+  if (release.body?.includes(attemptMarker) && !bodyRecord) {
+    throw new Error("Release body contains an invalid attempt record");
+  }
+  if (!asset) return bodyRecord;
+  const downloaded = await getReleaseAsset({
+    octokit,
+    owner,
+    repo,
+    assetId: asset.id
+  });
+  const data = downloaded.data;
+  const bytes = typeof data === "string" ? Buffer.from(data) : data instanceof ArrayBuffer ? Buffer.from(new Uint8Array(data)) : Buffer.from(data);
+  const record = parseAttemptJson(bytes.toString("utf8"));
+  if (!record) throw new Error(`Release asset ${attemptAssetName} is invalid`);
+  if (bodyRecord && JSON.stringify(bodyRecord) !== JSON.stringify(record)) {
+    throw new Error(
+      `Release body and ${attemptAssetName} contain conflicting attempt data`
+    );
+  }
+  return record;
 }
 function serializeAttemptBody(body, record) {
   const notes = (body ?? "").split(attemptMarker)[0].trim();
@@ -27394,7 +27436,12 @@ async function establishAttempt(args) {
   }
   if (published.length === 1) {
     const release = published[0];
-    const record2 = parseAttempt(release.body);
+    const record2 = await readAttemptRecord({
+      octokit,
+      owner,
+      repo,
+      release
+    });
     if (!record2 || record2.attempt_id !== id || record2.source_sha !== plan.source.sha || record2.version !== version || !samePlan(
       { ...record2.plan, attempt_id: void 0 },
       { ...plan, attempt_id: void 0 }
@@ -27422,7 +27469,12 @@ async function establishAttempt(args) {
   }
   if (existingDrafts.length === 1) {
     const release = existingDrafts[0];
-    const record2 = parseAttempt(release.body);
+    const record2 = await readAttemptRecord({
+      octokit,
+      owner,
+      repo,
+      release
+    });
     if (record2?.abandoned) {
       throw new Error(
         `Release attempt ${record2.attempt_id} was abandoned: ${record2.abandoned.reason}`
@@ -27678,7 +27730,12 @@ async function assertStablePredecessorsResolved(args) {
     const releases2 = await listRepositoryReleases({ octokit, owner, repo });
     for (const release of releases2) {
       if (!release.draft) continue;
-      const attempt = parseAttempt(release.body);
+      const attempt = await readAttemptRecord({
+        octokit,
+        owner,
+        repo,
+        release
+      });
       if (attempt && attempt.source_sha !== currentSha && attempt.plan.decision?.channel === "stable" && !attempt.abandoned && history.some((entry) => entry.sha === attempt.source_sha)) {
         throw new Error(
           `Unresolved predecessor commit ${attempt.source_sha}: its stable release attempt is not published or abandoned; recover it before continuing`
@@ -27705,10 +27762,17 @@ async function assertStablePredecessorsResolved(args) {
     owner,
     repo
   });
-  const attempts = releases.flatMap((release) => {
-    const attempt = parseAttempt(release.body);
-    return attempt ? [{ release, attempt }] : [];
-  });
+  const attempts = (await Promise.all(
+    releases.map(async (release) => {
+      const attempt = await readAttemptRecord({
+        octokit,
+        owner,
+        repo,
+        release
+      });
+      return attempt ? { release, attempt } : null;
+    })
+  )).filter((value) => value !== null);
   const latestStableByMajor = /* @__PURE__ */ new Map();
   for (const { release, attempt } of attempts) {
     if (release.draft || release.prerelease) continue;

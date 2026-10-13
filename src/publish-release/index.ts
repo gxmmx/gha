@@ -3,7 +3,9 @@ import * as github from "@actions/github";
 import { createHash } from "node:crypto";
 import {
   attemptMarker,
+  attemptAssetName,
   parseAttempt,
+  readAttemptRecord,
   serializeAttemptBody,
   type AttemptRecord,
   type RegistryReceipt,
@@ -13,6 +15,7 @@ import {
 import {
   createGitRef,
   createGitHubOperations,
+  getReleaseAsset,
   getGitRef,
   getRelease,
   listReleaseAssets,
@@ -29,6 +32,19 @@ const receiptSectionMarker = "<!-- gxmmx-registry-receipt:v1 -->";
 
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function attemptBytes(record: AttemptRecord): Buffer {
+  return Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
+}
+
+function attemptAsset(record: AttemptRecord): StagedAsset {
+  const bytes = attemptBytes(record);
+  return {
+    name: attemptAssetName,
+    size: bytes.length,
+    sha256: sha256(bytes),
+  };
 }
 
 function parsePlan(input: string): ReleasePlan {
@@ -107,7 +123,7 @@ function notesWithReceipt(notes: string, receipt?: RegistryReceipt): string {
       return `- ${reference} — \`${artifact.digest}\``;
     })
     .join("\n");
-  const section = `${receiptSectionMarker}\n## Registry artifacts\n\n${artifacts}`;
+  const section = `## Registry artifacts\n\n${artifacts}`;
   return base ? `${base}\n\n${section}` : section;
 }
 
@@ -251,7 +267,12 @@ async function verifyPreviousMajorAliases(args: {
   for (const release of releases) {
     if (release.id === currentReleaseId || release.draft || release.prerelease)
       continue;
-    const record = parseAttempt(release.body);
+    const record = await readAttemptRecord({
+      octokit,
+      owner,
+      repo,
+      release,
+    });
     const major = record ? stableMajor(record.version) : null;
     if (major === null || !record) continue;
     const previous = latestByMajor.get(major);
@@ -301,16 +322,20 @@ async function assertLatestForMajor(args: {
   if (major === null)
     throw new Error(`Invalid stable release version ${version}`);
   const releases = await listRepositoryReleases({ octokit, owner, repo });
-  const later = releases.find((release) => {
+  let later = false;
+  for (const release of releases) {
     if (release.id === releaseId || release.draft || release.prerelease)
-      return false;
-    const record = parseAttempt(release.body);
-    return (
-      record !== null &&
+      continue;
+    const record = await readAttemptRecord({ octokit, owner, repo, release });
+    if (
+      record &&
       stableMajor(record.version) === major &&
       compareStableVersions(record.version, version) > 0
-    );
-  });
+    ) {
+      later = true;
+      break;
+    }
+  }
   if (later) {
     throw new Error(
       `Release ${version} is not the latest stable release for v${major}; refusing to move the alias backward`,
@@ -375,7 +400,18 @@ async function publishRelease(args: {
   if (release.tag_name !== plan.versions.next_release_tag) {
     throw new Error("Draft release tag does not match the prepared plan");
   }
-  const record = parseAttempt(release.body);
+  let assets = await listReleaseAssets({
+    octokit,
+    owner,
+    repo,
+    releaseId,
+  });
+  const record = await readAttemptRecord({
+    octokit,
+    owner,
+    repo,
+    release: { ...release, assets },
+  });
   if (!record)
     throw new Error("Release is missing its prepared attempt record");
   validatePlan({ plan, record, attemptId, owner, repo });
@@ -413,12 +449,6 @@ async function publishRelease(args: {
     );
   }
 
-  const assets = await listReleaseAssets({
-    octokit,
-    owner,
-    repo,
-    releaseId,
-  });
   const assetByName = new Map(assets.map((asset) => [asset.name, asset]));
   const claimedAssets = new Map<string, StagedAsset>();
   for (const asset of record.asset_manifest?.assets ?? []) {
@@ -439,6 +469,7 @@ async function publishRelease(args: {
   const receiptExpected = receipt ?? persistedReceipt;
   const allowedAssets = new Set(claimedAssets.keys());
   if (receiptExpected) allowedAssets.add(receiptAssetName);
+  if (assetByName.has(attemptAssetName)) allowedAssets.add(attemptAssetName);
   for (const asset of assets) {
     if (!allowedAssets.has(asset.name)) {
       throw new Error(
@@ -485,6 +516,9 @@ async function publishRelease(args: {
       });
     }
     if (stable && record.major_alias_enabled !== aliasEnabled) {
+      if (assetByName.has(attemptAssetName)) {
+        throw new Error("Retry supplied conflicting major alias attempt data");
+      }
       await updateRelease({
         octokit,
         owner,
@@ -543,66 +577,126 @@ async function publishRelease(args: {
     (release.body ?? "").split(attemptMarker)[0].trim(),
     finalReceipt,
   );
-  const body = serializeAttemptBody(notes, updatedRecord);
-  if (finalReceipt || (stable && record.major_alias_enabled === undefined)) {
-    const saved = await updateRelease({
+  const draftBody = serializeAttemptBody(notes, updatedRecord);
+  const saved = await updateRelease({
+    octokit,
+    owner,
+    repo,
+    release_id: releaseId,
+    tag_name: record.tag,
+    body: draftBody,
+    draft: true,
+    prerelease: release.prerelease,
+  });
+  const savedRecord = parseAttempt(saved.data.body);
+  if (
+    !saved.data.draft ||
+    !savedRecord ||
+    JSON.stringify(savedRecord) !== JSON.stringify(updatedRecord)
+  ) {
+    throw new Error("Release metadata was not stored on the draft release");
+  }
+  if (finalReceipt) {
+    const savedAssets = await listReleaseAssets({
+      octokit,
+      owner,
+      repo,
+      releaseId,
+    });
+    const savedReceiptAsset = savedAssets.find(
+      (asset) => asset.name === receiptAssetName,
+    );
+    if (!savedReceiptAsset) {
+      throw new Error(
+        "Registry receipt asset was not stored on the draft release",
+      );
+    }
+    assertAssetMatches(savedReceiptAsset, expectedReceipt!);
+  }
+
+  const expectedAttempt = attemptAsset(updatedRecord);
+  const existingAttemptAsset = assets.find(
+    (asset) => asset.name === attemptAssetName,
+  );
+  if (existingAttemptAsset) {
+    assertAssetMatches(existingAttemptAsset, expectedAttempt);
+    await verifyAttemptAsset({
+      octokit,
+      owner,
+      repo,
+      assetId: existingAttemptAsset.id,
+      expected: expectedAttempt,
+      record: updatedRecord,
+    });
+  } else {
+    const bytes = attemptBytes(updatedRecord);
+    await uploadReleaseAsset({
       octokit,
       owner,
       repo,
       release_id: releaseId,
-      tag_name: record.tag,
-      body,
-      draft: true,
-      prerelease: release.prerelease,
+      name: attemptAssetName,
+      data: bytes as unknown as string,
+      ...(github.context.apiUrl !== "https://api.github.com"
+        ? { baseUrl: github.context.apiUrl }
+        : {}),
+      headers: {
+        "content-type": "application/json",
+        "content-length": bytes.length,
+      },
     });
-    const savedRecord = parseAttempt(saved.data.body);
-    if (
-      !saved.data.draft ||
-      !savedRecord ||
-      (finalReceipt &&
-        JSON.stringify(savedRecord.registry_receipt) !==
-          JSON.stringify(finalReceipt)) ||
-      (stable && savedRecord.major_alias_enabled !== aliasEnabled)
-    ) {
-      throw new Error("Release metadata was not stored on the draft release");
-    }
-    if (finalReceipt) {
-      const savedAssets = await listReleaseAssets({
-        octokit,
-        owner,
-        repo,
-        releaseId,
-      });
-      const savedReceiptAsset = savedAssets.find(
-        (asset) => asset.name === receiptAssetName,
-      );
-      if (!savedReceiptAsset) {
-        throw new Error(
-          "Registry receipt asset was not stored on the draft release",
-        );
-      }
-      assertAssetMatches(savedReceiptAsset, expectedReceipt!);
-    }
   }
+  assets = await listReleaseAssets({ octokit, owner, repo, releaseId });
+  const persistedAttemptAsset = assets.find(
+    (asset) => asset.name === attemptAssetName,
+  );
+  if (!persistedAttemptAsset) {
+    throw new Error(
+      "Release attempt asset was not stored on the draft release",
+    );
+  }
+  assertAssetMatches(persistedAttemptAsset, expectedAttempt);
+  await verifyAttemptAsset({
+    octokit,
+    owner,
+    repo,
+    assetId: persistedAttemptAsset.id,
+    expected: expectedAttempt,
+    record: updatedRecord,
+  });
 
+  const publishedBody = notesWithReceipt(notes, finalReceipt);
   const published = await updateRelease({
     octokit,
     owner,
     repo,
     release_id: releaseId,
     tag_name: record.tag,
-    body,
+    body: publishedBody,
     draft: false,
     prerelease: plan.decision.channel !== "stable",
   });
   if (published.data.draft) {
     throw new Error("GitHub did not publish the draft release");
   }
-  const publishedRecord = parseAttempt(published.data.body);
+  const publishedAssets = await listReleaseAssets({
+    octokit,
+    owner,
+    repo,
+    releaseId,
+  });
+  const publishedRecord = await readAttemptRecord({
+    octokit,
+    owner,
+    repo,
+    release: { ...published.data, assets: publishedAssets },
+  });
   if (
     !publishedRecord ||
     publishedRecord.attempt_id !== attemptId ||
     publishedRecord.source_sha !== plan.source.sha ||
+    (published.data.body ?? "").includes(attemptMarker) ||
+    JSON.stringify(publishedRecord) !== JSON.stringify(updatedRecord) ||
     (finalReceipt &&
       JSON.stringify(publishedRecord.registry_receipt) !==
         JSON.stringify(finalReceipt))
@@ -640,6 +734,41 @@ function receiptAsset(receipt: RegistryReceipt): StagedAsset {
     size: bytes.length,
     sha256: sha256(bytes),
   };
+}
+
+async function verifyAttemptAsset(args: {
+  octokit: GitHubClient;
+  owner: string;
+  repo: string;
+  assetId: number;
+  expected: StagedAsset;
+  record: AttemptRecord;
+}): Promise<void> {
+  const { octokit, owner, repo, assetId, expected, record } = args;
+  const downloaded = await getReleaseAsset({
+    octokit,
+    owner,
+    repo,
+    assetId,
+  });
+  const data = downloaded.data as unknown;
+  const bytes =
+    typeof data === "string"
+      ? Buffer.from(data)
+      : data instanceof ArrayBuffer
+        ? Buffer.from(new Uint8Array(data))
+        : Buffer.from(data as Uint8Array);
+  const actual = sha256(bytes);
+  if (
+    bytes.length !== expected.size ||
+    actual !== expected.sha256 ||
+    JSON.stringify(JSON.parse(bytes.toString("utf8"))) !==
+      JSON.stringify(record)
+  ) {
+    throw new Error(
+      `Release asset ${attemptAssetName} does not match the draft record`,
+    );
+  }
 }
 
 async function main(): Promise<void> {

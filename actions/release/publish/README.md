@@ -3,8 +3,12 @@
 Use this action after the consumer has completed its registry publication. It
 validates the plan and attempt saved on the matching draft, verifies that the
 full version tag points to the exact source commit, stores any registry receipt
-on the draft, then publishes the release. It does not publish to a registry or
-decide registry idempotency.
+on the draft, saves and verifies the complete attempt record as
+`gxmmx-release-attempt.json`, then publishes the release with reader-facing
+notes and artifact references only. The JSON asset supports post-publication
+retries and alias repair; existing releases with the older body-embedded record
+remain readable. It does not publish to a registry or decide registry
+idempotency.
 
 The optional receipt is JSON with a `schema_version` of `1` and one or more
 artifacts. Each artifact contains a registry name, an immutable reference, and

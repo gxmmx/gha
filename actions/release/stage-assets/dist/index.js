@@ -27193,6 +27193,14 @@ function listReleaseAssets(args) {
     per_page: 100
   });
 }
+function getReleaseAsset(args) {
+  return args.octokit.rest.repos.getReleaseAsset({
+    owner: args.owner,
+    repo: args.repo,
+    asset_id: args.assetId,
+    headers: { accept: "application/octet-stream" }
+  });
+}
 function uploadReleaseAsset(args) {
   const { octokit, ...parameters } = args;
   return octokit.rest.repos.uploadReleaseAsset(parameters);
@@ -27200,6 +27208,7 @@ function uploadReleaseAsset(args) {
 
 // src/prepare-release/attempt.ts
 var attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
+var attemptAssetName = "gxmmx-release-attempt.json";
 var parser = new CommitParser();
 function parseAttempt(body) {
   if (!body) return null;
@@ -27212,6 +27221,39 @@ function parseAttempt(body) {
   } catch {
     return null;
   }
+}
+function parseAttemptJson(value) {
+  try {
+    const record = JSON.parse(value);
+    return record.schema_version === 1 && record.attempt_id ? record : null;
+  } catch {
+    return null;
+  }
+}
+async function readAttemptRecord(args) {
+  const { octokit, owner, repo, release } = args;
+  const asset = release.assets?.find((item) => item.name === attemptAssetName);
+  const bodyRecord = parseAttempt(release.body);
+  if (release.body?.includes(attemptMarker) && !bodyRecord) {
+    throw new Error("Release body contains an invalid attempt record");
+  }
+  if (!asset) return bodyRecord;
+  const downloaded = await getReleaseAsset({
+    octokit,
+    owner,
+    repo,
+    assetId: asset.id
+  });
+  const data = downloaded.data;
+  const bytes = typeof data === "string" ? Buffer.from(data) : data instanceof ArrayBuffer ? Buffer.from(new Uint8Array(data)) : Buffer.from(data);
+  const record = parseAttemptJson(bytes.toString("utf8"));
+  if (!record) throw new Error(`Release asset ${attemptAssetName} is invalid`);
+  if (bodyRecord && JSON.stringify(bodyRecord) !== JSON.stringify(record)) {
+    throw new Error(
+      `Release body and ${attemptAssetName} contain conflicting attempt data`
+    );
+  }
+  return record;
 }
 function serializeAttemptBody(body, record) {
   const notes = (body ?? "").split(attemptMarker)[0].trim();
@@ -27332,7 +27374,18 @@ async function stageReleaseAssets(args) {
   if (!release.data.draft) {
     throw new Error("Release assets can only be staged on a draft release");
   }
-  const record = parseAttempt(release.data.body);
+  const existingAssets = await listReleaseAssets({
+    octokit,
+    owner,
+    repo,
+    releaseId
+  });
+  const record = await readAttemptRecord({
+    octokit,
+    owner,
+    repo,
+    release: { ...release.data, assets: existingAssets }
+  });
   if (!record || record.attempt_id !== attemptId || record.tag !== release.data.tag_name) {
     throw new Error("Draft release does not match the supplied attempt ID");
   }
@@ -27346,16 +27399,19 @@ async function stageReleaseAssets(args) {
       "Retry supplies different asset bytes for this release attempt"
     );
   }
-  const existingAssets = await listReleaseAssets({
-    octokit,
-    owner,
-    repo,
-    releaseId
-  });
   const expected = /* @__PURE__ */ new Map();
   for (const asset of desired.assets) expected.set(asset.name, asset);
   if (desired.checksum_asset) {
     expected.set(desired.checksum_asset.name, desired.checksum_asset);
+  }
+  if (existingAssets.some((asset) => asset.name === attemptAssetName)) {
+    const attemptBytes = Buffer.from(`${JSON.stringify(record, null, 2)}
+`);
+    expected.set(attemptAssetName, {
+      name: attemptAssetName,
+      size: attemptBytes.length,
+      sha256: sha256(attemptBytes)
+    });
   }
   for (const existing of existingAssets) {
     const entry = expected.get(existing.name);

@@ -10,6 +10,7 @@ const { promisify } = require("node:util");
 const action = path.resolve("actions/release/publish/dist/index.js");
 const execFileAsync = promisify(execFile);
 const sourceSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const attemptAssetName = "gxmmx-release-attempt.json";
 const plan = {
   schema_version: 1,
   repository: { owner: "gxmmx", name: "testproject" },
@@ -106,7 +107,7 @@ function outputsFrom(outputFile) {
 }
 
 function errorText(error) {
-  return `${error?.stdout ?? ""}\n${error?.stderr ?? ""}\n${error?.message ?? ""}\n${JSON.stringify(error?.publishState?.requests ?? [])}`;
+  return `${error?.stdout ?? ""}\n${error?.stderr ?? ""}\n${error?.message ?? ""}\n${JSON.stringify((error?.publishState?.requests ?? []).map((request) => [request.method, request.path]))}`;
 }
 
 async function publish({
@@ -119,6 +120,9 @@ async function publish({
   updateMajorAlias = "",
   existingReleases = [],
   existingRefs = {},
+  existingAssetData = new Map(),
+  failAttemptAssetUpload = false,
+  corruptAttemptAssetUpload = false,
 } = {}) {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-publish-release-"));
   const outputFile = path.join(temp, "outputs");
@@ -153,6 +157,7 @@ async function publish({
       ...releaseOverrides,
     },
     assets: [...existingAssets],
+    assetData: new Map(existingAssetData),
     refs: { ...existingRefs },
     releases: [],
     operations: [],
@@ -188,6 +193,14 @@ async function publish({
       request.on("end", () => {
         const bytes = Buffer.concat(chunks);
         const name = url.searchParams.get("name");
+        if (name === attemptAssetName && failAttemptAssetUpload) {
+          response.statusCode = 500;
+          response.end(JSON.stringify({ message: "Upload failed" }));
+          return;
+        }
+        if (name === attemptAssetName && corruptAttemptAssetUpload) {
+          bytes[0] = bytes[0] ^ 1;
+        }
         const digest = require("node:crypto")
           .createHash("sha256")
           .update(bytes)
@@ -200,9 +213,23 @@ async function publish({
           state: "uploaded",
         };
         state.assets.push(asset);
+        state.assetData.set(asset.id, bytes);
         state.operations.push({ operation: "upload", name, bytes });
         response.end(JSON.stringify(asset));
       });
+    } else if (
+      request.method === "GET" &&
+      decodedPath.startsWith("/repos/gxmmx/testproject/releases/assets/")
+    ) {
+      const id = Number(decodedPath.split("/").at(-1));
+      const bytes = state.assetData.get(id);
+      if (!bytes) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: "Not Found" }));
+      } else {
+        response.setHeader("content-type", "application/octet-stream");
+        response.end(bytes);
+      }
     } else if (
       request.method === "GET" &&
       decodedPath.startsWith("/repos/gxmmx/testproject/git/ref/tags/")
@@ -344,18 +371,19 @@ test("stores the registry receipt on the draft before publishing the exact tag",
     assert.equal(result.state.release.draft, false);
     assert.deepEqual(
       result.state.operations.map((operation) => operation.operation),
-      ["upload", "update-draft", "publish"],
+      ["upload", "update-draft", "upload", "publish"],
     );
     assert.equal(result.state.operations[0].name, "release-receipt.json");
     assert.match(result.state.operations[1].body, /Registry artifacts/);
     assert.equal(result.state.operations[1].draft, true);
-    assert.equal(result.state.operations[2].draft, false);
+    assert.equal(result.state.operations[2].name, "gxmmx-release-attempt.json");
+    assert.equal(result.state.operations[3].draft, false);
     assert.match(
       result.state.release.body,
       /https:\/\/registry\.npmjs\.org\/example\/0\.2\.0-rc\.1/,
     );
     const stored = JSON.parse(
-      result.state.operations[2].body.split(
+      result.state.operations[1].body.split(
         "<!-- gxmmx-release-attempt:v1 -->\n",
       )[1],
     );
@@ -376,12 +404,63 @@ test("publishes an asset-free release without a registry receipt", async () => {
   try {
     assert.equal(result.outputs.published, "true");
     assert.equal(result.state.release.draft, false);
+    assert.doesNotMatch(result.state.release.body, /gxmmx-release-attempt/);
     assert.deepEqual(
       result.state.operations.map((operation) => operation.operation),
-      ["publish"],
+      ["update-draft", "upload", "publish"],
+    );
+    assert.equal(result.state.operations[1].name, "gxmmx-release-attempt.json");
+    assert.deepEqual(
+      JSON.parse(result.state.operations[1].bytes.toString("utf8")),
+      JSON.parse(
+        result.state.operations[0].body.split(
+          "<!-- gxmmx-release-attempt:v1 -->\n",
+        )[1],
+      ),
     );
   } finally {
     result.cleanup();
+  }
+});
+
+test("stops before publication when the attempt asset cannot be saved", async () => {
+  let error;
+  try {
+    await publish({ failAttemptAssetUpload: true });
+  } catch (caught) {
+    error = caught;
+  }
+  try {
+    assert.ok(error);
+    assert.deepEqual(
+      error.publishState.operations.map((operation) => operation.operation),
+      ["update-draft"],
+    );
+    assert.equal(error.publishState.release.draft, true);
+  } finally {
+    error?.cleanup?.();
+  }
+});
+
+test("stops before publication when the attempt asset differs from the draft record", async () => {
+  let error;
+  try {
+    await publish({ corruptAttemptAssetUpload: true });
+  } catch (caught) {
+    error = caught;
+  }
+  try {
+    assert.ok(error);
+    assert.match(errorText(error), /does not match/);
+    assert.equal(
+      error.publishState.operations.some(
+        (operation) => operation.operation === "publish",
+      ),
+      false,
+    );
+    assert.equal(error.publishState.release.draft, true);
+  } finally {
+    error?.cleanup?.();
   }
 });
 
@@ -393,6 +472,90 @@ test("retries an already-published matching attempt without another update", asy
     assert.deepEqual(result.state.operations, []);
   } finally {
     result.cleanup();
+  }
+});
+
+test("retries a published attempt from its JSON asset with reader-facing notes", async () => {
+  const record = {
+    schema_version: 1,
+    attempt_id: plan.attempt_id,
+    tag: plan.versions.next_release_tag,
+    version: plan.versions.next_release_version,
+    source_sha: plan.source.sha,
+    plan,
+    asset_manifest: { schema_version: 1, assets: [], checksum_asset: null },
+  };
+  const bytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
+  const digest = require("node:crypto")
+    .createHash("sha256")
+    .update(bytes)
+    .digest("hex");
+  const asset = {
+    id: 42,
+    name: attemptAssetName,
+    size: bytes.length,
+    digest: `sha256:${digest}`,
+  };
+  const result = await publish({
+    releaseOverrides: {
+      draft: false,
+      body: "## Features\n\n- add acceptance fixture",
+    },
+    existingAssets: [asset],
+    existingAssetData: new Map([[asset.id, bytes]]),
+  });
+  try {
+    assert.equal(result.outputs.published, "true");
+    assert.equal(
+      result.state.release.body,
+      "## Features\n\n- add acceptance fixture",
+    );
+    assert.deepEqual(result.state.operations, []);
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("rejects a published attempt asset that conflicts with the prepared source", async () => {
+  const record = {
+    schema_version: 1,
+    attempt_id: plan.attempt_id,
+    tag: plan.versions.next_release_tag,
+    version: plan.versions.next_release_version,
+    source_sha: "b".repeat(40),
+    plan,
+    asset_manifest: { schema_version: 1, assets: [], checksum_asset: null },
+  };
+  const bytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
+  const digest = require("node:crypto")
+    .createHash("sha256")
+    .update(bytes)
+    .digest("hex");
+  const asset = {
+    id: 42,
+    name: attemptAssetName,
+    size: bytes.length,
+    digest: `sha256:${digest}`,
+  };
+  let error;
+  try {
+    await publish({
+      releaseOverrides: {
+        draft: false,
+        body: "## Features\n\n- add acceptance fixture",
+      },
+      existingAssets: [asset],
+      existingAssetData: new Map([[asset.id, bytes]]),
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  try {
+    assert.ok(error);
+    assert.match(errorText(error), /does not match|source|attempt/i);
+    assert.deepEqual(error.publishState.operations, []);
+  } finally {
+    error?.cleanup?.();
   }
 });
 
@@ -494,7 +657,7 @@ test("publishes a stable release then creates its major alias by default", async
     assert.equal(result.state.release.draft, false);
     assert.deepEqual(
       result.state.operations.map((operation) => operation.operation),
-      ["update-draft", "publish", "create-ref"],
+      ["update-draft", "upload", "publish", "create-ref"],
     );
     const savedAttempt = JSON.parse(
       result.state.operations[0].body.split(
@@ -518,7 +681,7 @@ test("stable alias opt-out is persisted and does not move the alias", async () =
     assert.equal(result.state.refs["tags/v0"], undefined);
     assert.deepEqual(
       result.state.operations.map((operation) => operation.operation),
-      ["update-draft", "publish"],
+      ["update-draft", "upload", "publish"],
     );
     const savedAttempt = JSON.parse(
       result.state.operations[0].body.split(
@@ -597,7 +760,7 @@ test("stable alias opt-out lets a later release proceed past a broken predecesso
     assert.equal(result.state.refs["tags/v0"], "b".repeat(40));
     assert.deepEqual(
       result.state.operations.map((operation) => operation.operation),
-      ["update-draft", "publish"],
+      ["update-draft", "upload", "publish"],
     );
   } finally {
     result.cleanup();

@@ -1,6 +1,11 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { establishAttempt, parseAttempt, type ReleasePlan } from "./attempt.js";
+import {
+  establishAttempt,
+  parseAttempt,
+  readAttemptRecord,
+  type ReleasePlan,
+} from "./attempt.js";
 import { CommitParser } from "conventional-commits-parser";
 import {
   channelForBranch,
@@ -231,7 +236,12 @@ async function assertStablePredecessorsResolved(args: {
     const releases = await listRepositoryReleases({ octokit, owner, repo });
     for (const release of releases) {
       if (!release.draft) continue;
-      const attempt = parseAttempt(release.body);
+      const attempt = await readAttemptRecord({
+        octokit,
+        owner,
+        repo,
+        release,
+      });
       if (
         attempt &&
         attempt.source_sha !== currentSha &&
@@ -274,10 +284,19 @@ async function assertStablePredecessorsResolved(args: {
     prerelease: boolean;
     body?: string | null;
   }>;
-  const attempts = releases.flatMap((release) => {
-    const attempt = parseAttempt(release.body);
-    return attempt ? [{ release, attempt }] : [];
-  });
+  const attempts = (
+    await Promise.all(
+      releases.map(async (release) => {
+        const attempt = await readAttemptRecord({
+          octokit,
+          owner,
+          repo,
+          release,
+        });
+        return attempt ? { release, attempt } : null;
+      }),
+    )
+  ).filter((value): value is NonNullable<typeof value> => value !== null);
 
   const latestStableByMajor = new Map<
     number,

@@ -1,5 +1,5 @@
 name: Prepare release
-description: Validate pull request release intent and normalize its title.
+description: Validate pull request release intent and snapshot merged release-branch decisions.
 inputs:
   github_token:
     description: Token used to read pull request history and update its title when permitted.
@@ -40,9 +40,13 @@ outputs:
   channel:
     description: Configured release channel, or empty for an unmatched target.
   release_required:
-    description: Whether the PR contains an unsuppressed release-worthy change.
+    description: Whether this PR or recorded push decision permits publication.
   pull_request:
     description: Pull request number from GitHub event context.
+  decision_sha:
+    description: Exact pushed squash commit whose channel decision was recorded; empty for PR runs.
+  decision_context:
+    description: Channel-specific commit status context used for a pushed release decision.
 runs:
   using: node24
   main: dist/index.js

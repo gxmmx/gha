@@ -27290,17 +27290,151 @@ function setOutputs(values) {
   core.setOutput("channel", values.channel ?? "");
   core.setOutput("release_required", String(values.releaseRequired));
   core.setOutput("pull_request", String(values.pullRequest));
+  core.setOutput("decision_sha", values.decisionSha ?? "");
+  core.setOutput("decision_context", values.decisionContext ?? "");
+}
+function decisionContext(channel) {
+  return `gha/release-decision/${channel}`;
+}
+function parseDecision(description) {
+  const match = /^v1;reason=(release|no-changes|suppressed);bump=(none|patch|minor|major)$/.exec(
+    description ?? ""
+  );
+  if (!match) throw new Error("Recorded release decision status is invalid");
+  return {
+    reason: match[1],
+    bump: match[2]
+  };
+}
+async function preparePush(args) {
+  const { context: context3, octokit, owner, repo, targetBranch, channel } = args;
+  if (channel === null) {
+    setOutputs({
+      prepared: false,
+      reason: "unmatched-branch",
+      title: "",
+      titleUpdated: false,
+      bump: "none",
+      channel,
+      releaseRequired: false,
+      pullRequest: 0
+    });
+    return;
+  }
+  const sourceSha = context3.sha;
+  const payloadSha = context3.payload.after;
+  if (!/^refs\/heads\//.test(context3.ref) || !sourceSha || payloadSha !== sourceSha) {
+    throw new Error(
+      "Release preparation requires the exact pushed branch commit SHA"
+    );
+  }
+  const associated = await octokit.paginate(
+    octokit.rest.repos.listPullRequestsAssociatedWithCommit,
+    {
+      owner,
+      repo,
+      commit_sha: sourceSha
+    }
+  );
+  const matching = associated.filter(
+    (pull2) => pull2.merged_at !== null && pull2.merge_commit_sha === sourceSha && pull2.base?.ref === targetBranch
+  );
+  if (matching.length !== 1) {
+    throw new Error(
+      `Pushed commit ${sourceSha} is not the exact squash commit of one merged PR targeting ${targetBranch}`
+    );
+  }
+  const pullRequest = matching[0];
+  const contextName = decisionContext(channel);
+  const statuses = await octokit.paginate(
+    octokit.rest.repos.listCommitStatusesForRef,
+    {
+      owner,
+      repo,
+      ref: sourceSha,
+      per_page: 100
+    }
+  );
+  const existing = statuses.find((status) => status.context === contextName);
+  if (existing) {
+    if (existing.state !== "success") {
+      throw new Error(
+        `Recorded release decision status ${contextName} is not successful`
+      );
+    }
+    const recorded = parseDecision(existing.description);
+    setOutputs({
+      prepared: true,
+      reason: recorded.reason,
+      title: "",
+      titleUpdated: false,
+      bump: recorded.reason === "suppressed" ? "none" : recorded.bump,
+      channel,
+      releaseRequired: recorded.reason === "release",
+      pullRequest: pullRequest.number,
+      decisionSha: sourceSha,
+      decisionContext: contextName
+    });
+    return;
+  }
+  const pull = await octokit.rest.pulls.get({
+    owner,
+    repo,
+    pull_number: pullRequest.number
+  });
+  if (pull.data.merged_at == null || pull.data.merge_commit_sha !== sourceSha || pull.data.base.ref !== targetBranch) {
+    throw new Error(
+      "Associated pull request no longer matches the pushed squash commit"
+    );
+  }
+  const commits = await octokit.paginate(octokit.rest.pulls.listCommits, {
+    owner,
+    repo,
+    pull_number: pullRequest.number,
+    per_page: 100
+  });
+  if (commits.length === 0 || commits.length >= 250) {
+    throw new Error(
+      "Pull request commit history is empty, incomplete, or truncated"
+    );
+  }
+  const messages = commits.map((commit) => {
+    if (!commit.sha || typeof commit.commit?.message !== "string") {
+      throw new Error("Pull request commit history is incomplete");
+    }
+    return commit.commit.message;
+  });
+  const signal = strongestSignal(messages);
+  const suppressed = pull.data.labels.some(
+    (item) => item.name === args.noReleaseLabel
+  );
+  const reason = suppressed ? "suppressed" : signal.bump === "none" ? "no-changes" : "release";
+  const bump = reason === "suppressed" ? "none" : signal.bump;
+  const description = `v1;reason=${reason};bump=${bump}`;
+  await octokit.rest.repos.createCommitStatus({
+    owner,
+    repo,
+    sha: sourceSha,
+    state: "success",
+    context: contextName,
+    description
+  });
+  setOutputs({
+    prepared: true,
+    reason,
+    title: "",
+    titleUpdated: false,
+    bump,
+    channel,
+    releaseRequired: reason === "release",
+    pullRequest: pullRequest.number,
+    decisionSha: sourceSha,
+    decisionContext: contextName
+  });
 }
 async function main() {
   const context3 = context2;
-  if (context3.eventName !== "pull_request" && context3.eventName !== "pull_request_target") {
-    throw new Error("prepare-release requires a pull_request event");
-  }
   const { owner, repo } = context3.repo;
-  const payload = context3.payload.pull_request;
-  if (!payload?.number) {
-    throw new Error("Pull request event is missing pull_request.number");
-  }
   const token = core.getInput("github_token", { required: true });
   const octokit = getOctokit(token, { baseUrl: context3.apiUrl });
   const repository = await octokit.rest.repos.get({ owner, repo });
@@ -27312,6 +27446,28 @@ async function main() {
     rcBranchInput: core.getInput("rc_branch"),
     versionFormatInput: "semver"
   });
+  if (context3.eventName === "push") {
+    const targetBranch2 = context3.ref.replace(/^refs\/heads\//, "");
+    const channel2 = channelForBranch(configuration, targetBranch2);
+    await preparePush({
+      context: context3,
+      octokit,
+      owner,
+      repo,
+      targetBranch: targetBranch2,
+      channel: channel2,
+      noReleaseLabel: core.getInput("no_release_label") || "no-release"
+    });
+    return;
+  }
+  if (context3.eventName !== "pull_request" && context3.eventName !== "pull_request_target") {
+    throw new Error(
+      "prepare-release requires a pull_request or release-branch push event"
+    );
+  }
+  const payload = context3.payload.pull_request;
+  if (!payload?.number)
+    throw new Error("Pull request event is missing pull_request.number");
   const pull = await octokit.rest.pulls.get({
     owner,
     repo,

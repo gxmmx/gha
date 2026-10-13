@@ -43,13 +43,25 @@ async function runPreparation({
   configuredStableBranch = "main",
   configuredBetaBranch = "",
   noReleaseLabel = "no-release",
+  eventName = "pull_request",
+  ref = "refs/pull/42/merge",
+  pushedSha = "9999999999999999999999999999999999999999",
+  associatedPulls = [],
+  existingStatuses = [],
 } = {}) {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-prepare-release-"));
   const outputFile = path.join(temp, "outputs");
   const eventFile = path.join(temp, "event.json");
   const headSha = "abcdef1234567890abcdef1234567890abcdef12";
   writeFileSync(outputFile, "");
-  writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 42 } }));
+  writeFileSync(
+    eventFile,
+    JSON.stringify(
+      eventName === "push"
+        ? { after: pushedSha }
+        : { pull_request: { number: 42 } },
+    ),
+  );
   const requests = [];
   const server = createServer((request, response) => {
     requests.push({ method: request.method, url: request.url });
@@ -61,6 +73,30 @@ async function runPreparation({
       response.end(JSON.stringify({ default_branch: "main" }));
     } else if (
       request.method === "GET" &&
+      request.url.startsWith(
+        `/repos/gxmmx/testproject/commits/${pushedSha}/pulls`,
+      )
+    ) {
+      response.end(JSON.stringify(associatedPulls));
+    } else if (
+      request.method === "GET" &&
+      request.url.startsWith(
+        `/repos/gxmmx/testproject/commits/${pushedSha}/statuses`,
+      )
+    ) {
+      response.end(JSON.stringify(existingStatuses));
+    } else if (
+      request.method === "POST" &&
+      request.url === `/repos/gxmmx/testproject/statuses/${pushedSha}`
+    ) {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        requests.at(-1).body = JSON.parse(body);
+        response.end(JSON.stringify({ ...JSON.parse(body), id: 1 }));
+      });
+    } else if (
+      request.method === "GET" &&
       request.url === "/repos/gxmmx/testproject/pulls/42"
     ) {
       response.end(
@@ -68,6 +104,8 @@ async function runPreparation({
           number: 42,
           title,
           labels: labels.map((name) => ({ name })),
+          merged_at: eventName === "push" ? "2026-10-13T12:00:00Z" : null,
+          merge_commit_sha: eventName === "push" ? pushedSha : null,
           head: { sha: headSha },
           base: { ref: base },
         }),
@@ -112,10 +150,10 @@ async function runPreparation({
           ...process.env,
           GITHUB_ACTIONS: "true",
           GITHUB_OUTPUT: outputFile,
-          GITHUB_SHA: "9999999999999999999999999999999999999999",
+          GITHUB_SHA: pushedSha,
           GITHUB_REPOSITORY: "gxmmx/testproject",
-          GITHUB_REF: "refs/pull/42/merge",
-          GITHUB_EVENT_NAME: "pull_request",
+          GITHUB_REF: ref,
+          GITHUB_EVENT_NAME: eventName,
           GITHUB_EVENT_PATH: eventFile,
           GITHUB_RUN_ID: "1234567",
           GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
@@ -139,6 +177,146 @@ async function runPreparation({
     rmSync(temp, { recursive: true, force: true });
   }
 }
+
+test("release-branch push snapshots the merged PR decision on the exact squash SHA", async () => {
+  const sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const result = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/main",
+    pushedSha: sha,
+    associatedPulls: [
+      {
+        number: 42,
+        merged_at: "2026-10-13T12:00:00Z",
+        merge_commit_sha: sha,
+        base: { ref: "main" },
+      },
+    ],
+    commits: ["feat(api): add the endpoint"],
+  });
+  assert.ifError(
+    result.error &&
+      new Error(
+        `${errorText(result.error)}\n${JSON.stringify(result.requests)}`,
+      ),
+  );
+  assert.equal(result.values.prepared, "true");
+  assert.equal(result.values.release_required, "true");
+  const status = result.requests.find((request) => request.method === "POST");
+  assert.equal(status.url, `/repos/gxmmx/testproject/statuses/${sha}`);
+  assert.equal(status.body.context, "gha/release-decision/stable");
+  assert.equal(status.body.description, "v1;reason=release;bump=minor");
+});
+
+test("suppression on a release push is recorded and cannot change on retry", async () => {
+  const sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const mergedPull = {
+    number: 42,
+    merged_at: "2026-10-13T12:00:00Z",
+    merge_commit_sha: sha,
+    base: { ref: "main" },
+  };
+  const first = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/main",
+    pushedSha: sha,
+    associatedPulls: [mergedPull],
+    labels: ["no-release"],
+    commits: ["feat(api): add the endpoint"],
+  });
+  assert.ifError(first.error);
+  assert.equal(first.values.reason, "suppressed");
+  assert.equal(first.values.release_required, "false");
+  assert.equal(
+    first.requests.find((request) => request.method === "POST").body
+      .description,
+    "v1;reason=suppressed;bump=none",
+  );
+
+  const retry = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/main",
+    pushedSha: sha,
+    associatedPulls: [mergedPull],
+    commits: ["docs: edited after merge"],
+    existingStatuses: [
+      {
+        context: "gha/release-decision/stable",
+        state: "success",
+        description: "v1;reason=suppressed;bump=none",
+      },
+    ],
+  });
+  assert.ifError(retry.error);
+  assert.equal(retry.values.reason, "suppressed");
+  assert.equal(retry.values.release_required, "false");
+  assert.equal(
+    retry.requests.some((request) => request.method === "POST"),
+    false,
+  );
+  assert.equal(
+    retry.requests.some((request) => request.url.includes("/pulls/42")),
+    false,
+  );
+});
+
+test("direct pushes and squash SHA mismatches fail before recording a decision", async () => {
+  const direct = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/main",
+    pushedSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+  });
+  assert.match(errorText(direct.error), /exact squash commit/i);
+  assert.equal(
+    direct.requests.some((request) => request.method === "POST"),
+    false,
+  );
+
+  const mismatch = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/main",
+    pushedSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    associatedPulls: [
+      {
+        number: 42,
+        merged_at: "2026-10-13T12:00:00Z",
+        merge_commit_sha: "1234567812345678123456781234567812345678",
+        base: { ref: "main" },
+      },
+    ],
+  });
+  assert.match(errorText(mismatch.error), /exact squash commit/i);
+  assert.equal(
+    mismatch.requests.some((request) => request.method === "POST"),
+    false,
+  );
+});
+
+test("candidate decisions use a channel-specific status context", async () => {
+  const sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const result = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/beta",
+    pushedSha: sha,
+    base: "beta",
+    configuredBetaBranch: "beta",
+    associatedPulls: [
+      {
+        number: 42,
+        merged_at: "2026-10-13T12:00:00Z",
+        merge_commit_sha: sha,
+        base: { ref: "beta" },
+      },
+    ],
+  });
+  assert.ifError(result.error);
+  assert.equal(result.values.channel, "beta");
+  assert.equal(result.values.decision_context, "gha/release-decision/beta");
+  assert.equal(
+    result.requests.find((request) => request.method === "POST").body.context,
+    "gha/release-decision/beta",
+  );
+});
 
 test("PR title uses strongest signal while preserving scope and description", async () => {
   const result = await runPreparation({

@@ -36,7 +36,20 @@ async function runPushPlan({
   statuses = [],
   versionFormat = "semver",
   noReleaseLabel = "no-release",
+  messages = ["feat: add reusable release workflow"],
+  previousStableVersion = null,
 } = {}) {
+  const previousSha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const commits = [
+    { sha: sourceSha, commit: { message: messages[0] } },
+    ...messages.slice(1).map((message, index) => ({
+      sha: `bcdefabcdefabcdefabcdefabcdefabcdefabc${index}`,
+      commit: { message },
+    })),
+    ...(previousStableVersion
+      ? [{ sha: previousSha, commit: { message: "chore: prior release" } }]
+      : []),
+  ];
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
   const outputFile = path.join(temp, "outputs");
   writeFileSync(outputFile, "");
@@ -45,9 +58,38 @@ async function runPushPlan({
     if (request.url === "/repos/gxmmx/testproject") {
       response.end(JSON.stringify({ default_branch: "main" }));
     } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
-      response.end("[]");
+      response.end(
+        JSON.stringify(
+          previousStableVersion
+            ? [
+                {
+                  tag_name: `v${previousStableVersion}`,
+                  draft: false,
+                  prerelease: false,
+                  body: "",
+                },
+              ]
+            : [],
+        ),
+      );
     } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
-      response.end("[]");
+      response.end(
+        JSON.stringify(
+          previousStableVersion
+            ? [
+                {
+                  name: `v${previousStableVersion}`,
+                  commit: { sha: previousSha },
+                },
+              ]
+            : [],
+        ),
+      );
+    } else if (
+      request.url ===
+      `/repos/gxmmx/testproject/commits/v${previousStableVersion}`
+    ) {
+      response.end(JSON.stringify({ sha: previousSha }));
     } else if (
       request.url.startsWith(
         `/repos/gxmmx/testproject/commits/${sourceSha}/statuses`,
@@ -71,14 +113,7 @@ async function runPushPlan({
         ]),
       );
     } else if (request.url.startsWith("/repos/gxmmx/testproject/commits?")) {
-      response.end(
-        JSON.stringify([
-          {
-            sha: sourceSha,
-            commit: { message: "feat: add reusable release workflow" },
-          },
-        ]),
-      );
+      response.end(JSON.stringify(commits));
     } else {
       response.statusCode = 404;
       response.end(JSON.stringify({ message: "Not Found" }));
@@ -139,8 +174,53 @@ test("recorded release decision takes precedence over a changed PR label", async
   });
   assert.equal(values.reason, "release");
   assert.equal(values.release_required, "true");
-  assert.equal(values.next_release_version, "0.2.0");
-  assert.equal(values.next_release_tag, "v0.2.0");
+  assert.equal(values.next_release_version, "0.1.0");
+  assert.equal(values.next_release_tag, "v0.1.0");
+});
+
+test("first stable release uses 0.1.0 for every release-worthy signal", async () => {
+  for (const message of [
+    "fix: handle empty input",
+    "feat: add reusable release workflow",
+    "feat!: replace the release interface",
+  ]) {
+    const values = await runPushPlan({ messages: [message] });
+    assert.equal(
+      values.bump,
+      message.startsWith("fix")
+        ? "patch"
+        : message.includes("!")
+          ? "major"
+          : "minor",
+    );
+    assert.equal(values.next_stable_version, "0.1.0");
+    assert.equal(values.next_release_version, "0.1.0");
+    assert.equal(values.next_release_tag, "v0.1.0");
+    assert.equal(values.release_required, "true");
+  }
+});
+
+test("first stable release still skips history without a release-worthy signal", async () => {
+  const values = await runPushPlan({
+    messages: ["docs: clarify action usage"],
+  });
+  assert.equal(values.bump, "none");
+  assert.equal(values.reason, "no-changes");
+  assert.equal(values.release_required, "false");
+  assert.equal(values.next_stable_version, "");
+  assert.equal(values.next_release_version, "");
+  assert.equal(values.next_release_tag, "");
+});
+
+test("published stable release remains the baseline for subsequent bumps", async () => {
+  const values = await runPushPlan({
+    messages: ["fix: handle empty input"],
+    previousStableVersion: "0.1.0",
+  });
+  assert.equal(values.bump, "patch");
+  assert.equal(values.next_stable_version, "0.1.1");
+  assert.equal(values.next_release_version, "0.1.1");
+  assert.equal(values.next_release_tag, "v0.1.1");
 });
 
 test("unconfigured branch outputs a short-SHA build version and non-publishable plan", async () => {
@@ -242,10 +322,10 @@ test("stable push plans the strongest bump across unreleased commits", async () 
       },
     });
     const values = outputsFrom(outputFile);
-    assert.equal(values.build_version, "0.2.0");
-    assert.equal(values.next_stable_version, "0.2.0");
-    assert.equal(values.next_release_version, "0.2.0");
-    assert.equal(values.next_release_tag, "v0.2.0");
+    assert.equal(values.build_version, "0.1.0");
+    assert.equal(values.next_stable_version, "0.1.0");
+    assert.equal(values.next_release_version, "0.1.0");
+    assert.equal(values.next_release_tag, "v0.1.0");
     assert.equal(values.release_required, "true");
     assert.equal(values.commit_sha, sourceSha);
     assert.equal(values.channel, "stable");
@@ -259,7 +339,7 @@ test("stable push plans the strongest bump across unreleased commits", async () 
     assert.equal(plan.history.stable_base_version, "0.1.0");
     assert.equal(plan.decision.channel, "stable");
     assert.equal(plan.decision.bump, "minor");
-    assert.equal(plan.versions.next_release_tag, "v0.2.0");
+    assert.equal(plan.versions.next_release_tag, "v0.1.0");
     assert.equal(JSON.stringify(plan).includes("test-token"), false);
     assert.ok(requests.includes("/repos/gxmmx/testproject"));
     assert.ok(
@@ -394,7 +474,7 @@ test("stable planner advances past a version tag claimed by another source", asy
       response.end("[]");
     } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
       response.end(
-        JSON.stringify([{ name: "v0.2.0", commit: { sha: occupiedSha } }]),
+        JSON.stringify([{ name: "v0.1.0", commit: { sha: occupiedSha } }]),
       );
     } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
       response.end(
@@ -423,9 +503,9 @@ test("stable planner advances past a version tag claimed by another source", asy
       },
     });
     const values = outputsFrom(outputFile);
-    assert.equal(values.next_stable_version, "0.2.1");
-    assert.equal(values.next_release_version, "0.2.1");
-    assert.equal(values.next_release_tag, "v0.2.1");
+    assert.equal(values.next_stable_version, "0.1.1");
+    assert.equal(values.next_release_version, "0.1.1");
+    assert.equal(values.next_release_tag, "v0.1.1");
   } finally {
     server.close();
     rmSync(temp, { recursive: true, force: true });
@@ -473,14 +553,14 @@ test("PEP 440 stable release values keep a canonical SemVer tag", async () => {
       },
     });
     const values = outputsFrom(outputFile);
-    assert.equal(values.build_version, "0.2.0");
-    assert.equal(values.next_stable_version, "0.2.0");
-    assert.equal(values.next_release_version, "0.2.0");
-    assert.equal(values.next_release_tag, "v0.2.0");
+    assert.equal(values.build_version, "0.1.0");
+    assert.equal(values.next_stable_version, "0.1.0");
+    assert.equal(values.next_release_version, "0.1.0");
+    assert.equal(values.next_release_tag, "v0.1.0");
     const plan = JSON.parse(values.release_plan);
     assert.equal(plan.configuration.version_format, "pep440");
     assert.equal(plan.versions.build_version, values.next_release_version);
-    assert.equal(plan.versions.next_release_tag, "v0.2.0");
+    assert.equal(plan.versions.next_release_tag, "v0.1.0");
   } finally {
     server.close();
     rmSync(temp, { recursive: true, force: true });
@@ -727,7 +807,7 @@ test("Git co-author trailers do not invalidate a Conventional Commit", async () 
     });
     const values = outputsFrom(outputFile);
     assert.equal(values.bump, "minor");
-    assert.equal(values.next_stable_version, "0.2.0");
+    assert.equal(values.next_stable_version, "0.1.0");
     assert.equal(values.release_required, "true");
   } finally {
     server.close();
@@ -783,8 +863,8 @@ test("pull request preview uses the PR head SHA and SemVer preview identifier", 
       },
     });
     const values = outputsFrom(outputFile);
-    assert.equal(values.build_version, "0.2.0-pr.42.sha.abcdef12");
-    assert.equal(values.next_stable_version, "0.2.0");
+    assert.equal(values.build_version, "0.1.0-pr.42.sha.abcdef12");
+    assert.equal(values.next_stable_version, "0.1.0");
     assert.equal(values.next_release_version, "");
     assert.equal(values.next_release_tag, "");
     assert.equal(values.release_required, "false");
@@ -861,13 +941,13 @@ test("PEP 440 PR preview uses the workflow run ID and keeps release outputs empt
     versionFormat: "pep440",
     commitMessage: "feat: add preview support",
   });
-  assert.equal(values.build_version, "0.2.0.dev1234567");
-  assert.equal(values.next_stable_version, "0.2.0");
+  assert.equal(values.build_version, "0.1.0.dev1234567");
+  assert.equal(values.next_stable_version, "0.1.0");
   assert.equal(values.next_release_version, "");
   assert.equal(values.next_release_tag, "");
   const plan = JSON.parse(values.release_plan);
   assert.equal(plan.configuration.version_format, "pep440");
-  assert.equal(plan.versions.build_version, "0.2.0.dev1234567");
+  assert.equal(plan.versions.build_version, "0.1.0.dev1234567");
   assert.equal(plan.versions.next_release_version, null);
   assert.equal(plan.versions.next_release_tag, null);
 });

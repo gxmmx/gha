@@ -27635,7 +27635,7 @@ async function main() {
   for (const commit of unreleasedCommits) {
     bump = stronger(bump, bumpForMessage(commit.commit.message));
   }
-  let nextStableVersion = bump === "none" ? null : nextVersion(stableBase, bump);
+  let nextStableVersion = bump === "none" ? null : baseline ? nextVersion(stableBase, bump) : channel === "stable" ? "0.1.0" : nextVersion(stableBase, bump);
   let releaseRequired = !preview && bump !== "none";
   let reason = preview ? "preview" : bump === "none" ? "no-changes" : "release";
   let nextReleaseVersion = null;

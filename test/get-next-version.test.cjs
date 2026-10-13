@@ -158,6 +158,59 @@ test("stable push plans the strongest bump across unreleased commits", async () 
   }
 });
 
+test("PEP 440 stable release values keep a canonical SemVer tag", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
+  const outputFile = path.join(temp, "outputs");
+  writeFileSync(outputFile, "");
+  const sourceSha = "1234567890abcdef1234567890abcdef12345678";
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/repos/gxmmx/testproject") {
+      response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
+      response.end(
+        JSON.stringify([
+          { sha: sourceSha, commit: { message: "feat: add new endpoint" } },
+        ]),
+      );
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "Not Found" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await execFileAsync(process.execPath, [action], {
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_SHA: sourceSha,
+        GITHUB_REPOSITORY: "gxmmx/testproject",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
+        INPUT_GITHUB_TOKEN: "test-token",
+        INPUT_VERSION_FORMAT: "pep440",
+      },
+    });
+    const values = outputsFrom(outputFile);
+    assert.equal(values.build_version, "0.2.0");
+    assert.equal(values.next_stable_version, "0.2.0");
+    assert.equal(values.next_release_version, "0.2.0");
+    assert.equal(values.next_release_tag, "v0.2.0");
+    const plan = JSON.parse(values.release_plan);
+    assert.equal(plan.configuration.version_format, "pep440");
+    assert.equal(plan.versions.build_version, values.next_release_version);
+    assert.equal(plan.versions.next_release_tag, "v0.2.0");
+  } finally {
+    server.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test("stable planning starts after the latest reachable stable release", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
   const outputFile = path.join(temp, "outputs");

@@ -1,0 +1,49 @@
+name: Get next version
+description: Produce a build version and read-only release plan from GitHub context.
+inputs:
+  github_token:
+    description: Token used to read repository, pull request, and commit history.
+    required: true
+  stable_branch:
+    description: Stable release branch. Defaults to the repository default branch.
+    required: false
+  alpha_branch:
+    description: Branch that publishes alpha candidates. Empty disables the channel.
+    required: false
+  beta_branch:
+    description: Branch that publishes beta candidates. Empty disables the channel.
+    required: false
+  rc_branch:
+    description: Branch that publishes release candidates. Empty disables the channel.
+    required: false
+  version_format:
+    description: Build and release version profile (semver or pep440).
+    required: false
+  no_release_label:
+    description: Pull request label that suppresses publication; defaults to no-release.
+    required: false
+    default: no-release
+outputs:
+  build_version:
+    description: Version identifier for this build.
+  next_stable_version:
+    description: Prospective stable base version, or empty when none is available.
+  next_release_version:
+    description: Proposed release version, or empty when no release is planned.
+  next_release_tag:
+    description: Canonical Git tag for a proposed release, or empty.
+  release_required:
+    description: Whether the configured push has an unsuppressed release decision.
+  commit_sha:
+    description: Full source commit SHA.
+  channel:
+    description: Resolved release channel, or empty for an unconfigured branch.
+  bump:
+    description: Proposed version bump, or empty when no release is planned.
+  reason:
+    description: Decision reason.
+  release_plan:
+    description: Versioned JSON release plan for later release actions.
+runs:
+  using: node24
+  main: dist/index.js

@@ -92,7 +92,7 @@ jobs:
     steps:
       - id: plan
         if: github.event_name == 'push'
-        uses: $/actions/get-next-version
+        uses: $/actions/release/get-next-version
         with:
           github_token: ${{ github.token }}
           stable_branch: ${{ inputs.stable_branch }}

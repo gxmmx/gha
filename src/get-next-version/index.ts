@@ -1,6 +1,13 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { CommitParser } from "conventional-commits-parser";
+import {
+  canonicalStableTag,
+  fallbackBuildVersion,
+  parseVersionFormat,
+  previewBuildVersion,
+  type VersionFormat,
+} from "./version-profile";
 
 type Bump = "none" | "patch" | "minor" | "major";
 type Reason = "release" | "preview" | "no-changes" | "unmatched-branch";
@@ -20,7 +27,7 @@ interface ReleasePlan {
     alpha_branch: null;
     beta_branch: null;
     rc_branch: null;
-    version_format: "semver";
+    version_format: VersionFormat;
   };
   history: {
     stable_base_version: string | null;
@@ -58,10 +65,6 @@ const parser = new CommitParser({
 });
 const malformedConventionalHeader = /^[A-Za-z][A-Za-z0-9-]*(?:\(|!?:)/;
 const semverTag = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-
-function fallbackVersion(sha: string): string {
-  return `sha-${sha.slice(0, 8)}`;
-}
 
 function parseSemver(version: string): [number, number, number] | null {
   const match = semverTag.exec(version);
@@ -138,6 +141,7 @@ function makePlan(args: {
   targetBranch: string;
   pullRequest: number | null;
   stableBranch: string;
+  versionFormat: VersionFormat;
   stableBase: string | null;
   stableReleaseTag: string | null;
   stableReleaseSha: string | null;
@@ -163,7 +167,7 @@ function makePlan(args: {
       alpha_branch: null,
       beta_branch: null,
       rc_branch: null,
-      version_format: "semver",
+      version_format: args.versionFormat,
     },
     history: {
       stable_base_version: args.stableBase,
@@ -180,7 +184,7 @@ function makePlan(args: {
       build_version: args.buildVersion,
       next_stable_version: args.nextStableVersion,
       next_release_version: releaseVersion,
-      next_release_tag: releaseVersion ? `v${releaseVersion}` : null,
+      next_release_tag: canonicalStableTag(releaseVersion),
     },
   };
 }
@@ -207,6 +211,7 @@ async function main(): Promise<void> {
   const repository = await octokit.rest.repos.get({ owner, repo: name });
   const stableBranch =
     core.getInput("stable_branch") || repository.data.default_branch;
+  const versionFormat = parseVersionFormat(core.getInput("version_format"));
   let sourceSha = context.sha;
   let targetBranch = context.ref.replace(/^refs\/heads\//, "");
   let pullRequest: number | null = null;
@@ -238,13 +243,18 @@ async function main(): Promise<void> {
       targetBranch,
       pullRequest,
       stableBranch,
+      versionFormat,
       stableBase: null,
       stableReleaseTag: null,
       stableReleaseSha: null,
       bump: "none",
       reason: "unmatched-branch",
       releaseRequired: false,
-      buildVersion: fallbackVersion(sourceSha),
+      buildVersion: fallbackBuildVersion(
+        versionFormat,
+        sourceSha,
+        context.runId,
+      ),
       nextStableVersion: null,
     });
     publishOutputs(unmatched);
@@ -325,13 +335,23 @@ async function main(): Promise<void> {
     targetBranch,
     pullRequest,
     stableBranch,
+    versionFormat,
     stableBase,
     stableReleaseTag: baseline?.tag ?? null,
     stableReleaseSha: baseline?.sha ?? null,
     bump,
     reason,
     releaseRequired,
-    buildVersion: nextStableVersion ?? fallbackVersion(sourceSha),
+    buildVersion: preview
+      ? previewBuildVersion({
+          format: versionFormat,
+          prospectiveVersion: nextStableVersion,
+          pullRequest: pullRequest!,
+          sha: sourceSha,
+          runId: context.runId,
+        })
+      : (nextStableVersion ??
+        fallbackBuildVersion(versionFormat, sourceSha, context.runId)),
     nextStableVersion,
   });
   publishOutputs(plan);

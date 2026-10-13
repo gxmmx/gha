@@ -27160,6 +27160,28 @@ var CommitParser = class {
   }
 };
 
+// src/get-next-version/version-profile.ts
+function parseVersionFormat(input) {
+  if (input === "" || input === "semver") return "semver";
+  if (input === "pep440") return "pep440";
+  throw new Error(`Unsupported version_format: ${input}`);
+}
+function fallbackBuildVersion(format, sha, runId) {
+  return format === "pep440" ? `0.0.0.dev${runId}` : `sha-${sha.slice(0, 8)}`;
+}
+function previewBuildVersion(args) {
+  if (args.prospectiveVersion === null) {
+    return fallbackBuildVersion(args.format, args.sha, args.runId);
+  }
+  if (args.format === "pep440") {
+    return `${args.prospectiveVersion}.dev${args.runId}`;
+  }
+  return `${args.prospectiveVersion}-pr.${args.pullRequest}.sha.${args.sha.slice(0, 8)}`;
+}
+function canonicalStableTag(version) {
+  return version === null ? null : `v${version}`;
+}
+
 // src/get-next-version/index.ts
 var parser = new CommitParser({
   headerPattern: /^(\w+)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
@@ -27167,9 +27189,6 @@ var parser = new CommitParser({
 });
 var malformedConventionalHeader = /^[A-Za-z][A-Za-z0-9-]*(?:\(|!?:)/;
 var semverTag = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-function fallbackVersion(sha) {
-  return `sha-${sha.slice(0, 8)}`;
-}
 function parseSemver(version) {
   const match = semverTag.exec(version);
   if (!match) return null;
@@ -27235,7 +27254,7 @@ function makePlan(args) {
       alpha_branch: null,
       beta_branch: null,
       rc_branch: null,
-      version_format: "semver"
+      version_format: args.versionFormat
     },
     history: {
       stable_base_version: args.stableBase,
@@ -27252,7 +27271,7 @@ function makePlan(args) {
       build_version: args.buildVersion,
       next_stable_version: args.nextStableVersion,
       next_release_version: releaseVersion,
-      next_release_tag: releaseVersion ? `v${releaseVersion}` : null
+      next_release_tag: canonicalStableTag(releaseVersion)
     }
   };
 }
@@ -27276,6 +27295,7 @@ async function main() {
   const octokit = getOctokit(token, { baseUrl: context3.apiUrl });
   const repository = await octokit.rest.repos.get({ owner, repo: name });
   const stableBranch = core.getInput("stable_branch") || repository.data.default_branch;
+  const versionFormat = parseVersionFormat(core.getInput("version_format"));
   let sourceSha = context3.sha;
   let targetBranch = context3.ref.replace(/^refs\/heads\//, "");
   let pullRequest = null;
@@ -27302,13 +27322,18 @@ async function main() {
       targetBranch,
       pullRequest,
       stableBranch,
+      versionFormat,
       stableBase: null,
       stableReleaseTag: null,
       stableReleaseSha: null,
       bump: "none",
       reason: "unmatched-branch",
       releaseRequired: false,
-      buildVersion: fallbackVersion(sourceSha),
+      buildVersion: fallbackBuildVersion(
+        versionFormat,
+        sourceSha,
+        context3.runId
+      ),
       nextStableVersion: null
     });
     publishOutputs(unmatched);
@@ -27371,13 +27396,20 @@ async function main() {
     targetBranch,
     pullRequest,
     stableBranch,
+    versionFormat,
     stableBase,
     stableReleaseTag: baseline?.tag ?? null,
     stableReleaseSha: baseline?.sha ?? null,
     bump,
     reason,
     releaseRequired,
-    buildVersion: nextStableVersion ?? fallbackVersion(sourceSha),
+    buildVersion: preview ? previewBuildVersion({
+      format: versionFormat,
+      prospectiveVersion: nextStableVersion,
+      pullRequest,
+      sha: sourceSha,
+      runId: context3.runId
+    }) : nextStableVersion ?? fallbackBuildVersion(versionFormat, sourceSha, context3.runId),
     nextStableVersion
   });
   publishOutputs(plan);

@@ -7,6 +7,9 @@ inputs:
   stable_branch:
     description: Stable release branch. Defaults to the repository default branch.
     required: false
+  version_format:
+    description: Build version profile, either semver or pep440. Defaults to semver.
+    required: false
 outputs:
   build_version:
     description: Version identifier for this build.

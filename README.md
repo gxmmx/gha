@@ -1,9 +1,34 @@
 # gha
 
-Reusable GitHub Actions and workflows for planning and publishing versioned
-GitHub releases.
+Reusable GitHub Actions and workflows for release automation.
 
-## Use the release workflow
+## Components
+
+| Component | Group | Purpose |
+| --- | --- | --- |
+| [Get next version](actions/get-next-version/README.md) | Release | Plan a stable or prerelease version without writing to GitHub. |
+| [Prepare release](actions/release/prepare-release/README.md) | Release | Validate a release decision, claim its version, and create a draft. |
+| [Stage release assets](actions/release/stage-assets/README.md) | Release | Validate and attach project files to a draft release. |
+| [Publish release](actions/release/publish/README.md) | Release | Record artifact references and publish a prepared release. |
+| [Recover release attempt](actions/release/recover/README.md) | Release | Resume or explicitly abandon an existing release attempt. |
+| [Minimal release workflow](.github/workflows/release.md) | Release | Compose actions for GitHub-only releases. |
+
+## Actions
+
+### Release Actions
+
+These actions can run independently or be composed around a project's own
+tests, builds, and registry publishing. Each action guide documents its inputs,
+outputs, permissions, and consumer usage.
+
+A composed release pipeline plans a version, prepares an attempt before the
+consumer build, stages files when needed, and publishes after the consumer's
+required jobs succeed. The recovery action resumes or abandons an existing
+attempt.
+
+## Reusable workflows
+
+### Minimal release workflow
 
 For a simple GitHub-only release, call the reusable workflow from your
 repository:
@@ -36,21 +61,6 @@ channels, and retry behavior, see the [workflow guide](.github/workflows/release
 
 Use `@v0` for the current stable major version, or pin a full commit SHA when
 you need an immutable reference.
-
-## Available components
-
-| Component | Purpose |
-| --- | --- |
-| [Get next version](actions/get-next-version/README.md) | Plan a stable or prerelease version without writing to GitHub. |
-| [Prepare release](actions/release/prepare-release/README.md) | Validate a release decision, claim its version, and create a draft. |
-| [Stage release assets](actions/release/stage-assets/README.md) | Validate and attach project files to a draft release. |
-| [Publish release](actions/release/publish/README.md) | Record artifact references and publish a prepared release. |
-| [Recover release attempt](actions/release/recover/README.md) | Resume or explicitly abandon an existing release attempt. |
-| [Minimal release workflow](.github/workflows/release.md) | Compose the planner, preparation, and publisher for GitHub-only releases. |
-
-Projects that build or publish artifacts can compose the actions around their
-own build and registry steps. Each action guide documents its inputs, outputs,
-permissions, and consumer usage.
 
 ## Repository layout
 

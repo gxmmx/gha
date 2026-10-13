@@ -27263,6 +27263,11 @@ function validatePlan(args) {
   if (plan.schema_version !== 1 || plan.repository?.owner !== owner || plan.repository?.name !== repo || plan.source?.event !== "push" || !/^[a-f0-9]{40}$/i.test(plan.source.sha ?? "") || !plan.source.target_branch || !plan.configuration || plan.decision?.reason !== "release" || plan.decision.release_required !== true || !plan.versions?.next_release_tag || !plan.versions.next_release_version) {
     throw new Error("release_plan is not a valid prepared release plan");
   }
+  if (record.abandoned) {
+    throw new Error(
+      `Release attempt was abandoned: ${record.abandoned.reason}`
+    );
+  }
   if (plan.attempt_id !== attemptId || record.attempt_id !== attemptId || record.tag !== plan.versions.next_release_tag || record.version !== plan.versions.next_release_version || record.source_sha !== plan.source.sha || !samePlan(record.plan, plan)) {
     throw new Error(
       "Prepared release plan does not match the draft attempt source, version, or configuration"

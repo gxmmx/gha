@@ -71,3 +71,9 @@ version. Candidate Git tags always use SemVer; `version_format: pep440` renders
 candidate outputs as `aN`, `bN`, or `rcN`. A candidate branch must contain the
 latest successful stable release. The repository default branch cannot be a
 candidate branch, and candidate branch assignments cannot overlap.
+
+The planner also reads full-version Git tags as durable claims. Stable planning
+advances the required bump to the next unused patch when another source already
+owns the proposed tag. Candidate planning skips claimed channel counters, while
+reruns for the exact claimed source keep their candidate version. This also
+covers a run interrupted after creating the tag but before creating its draft.

@@ -51,6 +51,15 @@ async function plan({
       response.end(JSON.stringify({ default_branch: "main" }));
     } else if (url.pathname === "/repos/gxmmx/testproject/releases") {
       response.end(JSON.stringify(releases));
+    } else if (url.pathname === "/repos/gxmmx/testproject/tags") {
+      response.end(
+        JSON.stringify(
+          Object.entries(tagShas).map(([name, sha]) => ({
+            name,
+            commit: { sha },
+          })),
+        ),
+      );
     } else if (url.pathname.startsWith("/repos/gxmmx/testproject/commits/")) {
       const tag = decodeURIComponent(url.pathname.split("/").at(-1));
       response.end(JSON.stringify({ sha: tagShas[tag] }));
@@ -142,6 +151,17 @@ test("candidate counters are independent and PEP 440 changes versions but not ta
   assert.equal(result.build_version, "1.4.3a1");
   assert.equal(result.next_release_version, "1.4.3a1");
   assert.equal(result.next_release_tag, "v1.4.3-alpha.1");
+});
+
+test("candidate planner skips durable tag claims even when no draft is visible", async () => {
+  const result = await plan({
+    releases: [],
+    tagShas: { "v0.2.0-beta.1": earlierCandidateSha },
+    commits: commitsWithFeature,
+    inputs: { beta_branch: "beta" },
+  });
+  assert.equal(result.next_release_tag, "v0.2.0-beta.2");
+  assert.equal(result.next_release_version, "0.2.0-beta.2");
 });
 
 test("RC candidates use their own SemVer counter", async () => {

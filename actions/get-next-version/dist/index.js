@@ -27178,9 +27178,6 @@ function previewBuildVersion(args) {
   }
   return `${args.prospectiveVersion}-pr.${args.pullRequest}.sha.${args.sha.slice(0, 8)}`;
 }
-function canonicalStableTag(version) {
-  return version === null ? null : `v${version}`;
-}
 
 // src/get-next-version/channels.ts
 function resolveChannelConfiguration(args) {
@@ -27426,7 +27423,7 @@ async function main() {
     publishOutputs(unmatched);
     return;
   }
-  const [releases, commits] = await Promise.all([
+  const [releases, commits, tags] = await Promise.all([
     octokit.paginate(octokit.rest.repos.listReleases, {
       owner,
       repo: name,
@@ -27437,6 +27434,11 @@ async function main() {
       repo: name,
       sha: sourceSha,
       per_page: 100
+    }),
+    octokit.paginate(octokit.rest.repos.listTags, {
+      owner,
+      repo: name,
+      per_page: 100
     })
   ]);
   const commitPositions = new Map(
@@ -27444,6 +27446,9 @@ async function main() {
   );
   const stableReleases = [];
   const candidateReleases = [];
+  const tagClaims = new Map(
+    tags.map((tag) => [tag.name, tag.commit.sha])
+  );
   for (const release of releases) {
     if (release.draft) continue;
     const stableVersion = release.prerelease ? null : release.tag_name.replace(/^v/, "");
@@ -27469,6 +27474,14 @@ async function main() {
       candidateReleases.push({ tag, sha, ...parsedCandidate });
     }
   }
+  for (const [tag, sha] of tagClaims) {
+    const stableVersion = tag.replace(/^v/, "");
+    if (parseStableSemver(stableVersion)) continue;
+    const parsedCandidate = parseCandidateTag(tag);
+    if (parsedCandidate && !candidateReleases.some((release) => release.tag === tag)) {
+      candidateReleases.push({ tag, sha, ...parsedCandidate });
+    }
+  }
   const reachableStableReleases = stableReleases.filter(
     (release) => release.position !== void 0
   );
@@ -27491,18 +27504,28 @@ async function main() {
   for (const commit of unreleasedCommits) {
     bump = stronger(bump, bumpForMessage(commit.commit.message));
   }
-  const nextStableVersion = bump === "none" ? null : nextVersion(stableBase, bump);
+  let nextStableVersion = bump === "none" ? null : nextVersion(stableBase, bump);
   const releaseRequired = !preview && bump !== "none";
   const reason = preview ? "preview" : bump === "none" ? "no-changes" : "release";
   let nextReleaseVersion = null;
   let nextReleaseTag = null;
   if (releaseRequired && nextStableVersion) {
     if (channel === "stable") {
-      nextReleaseVersion = formatStableVersion(
-        nextStableVersion,
-        configuration.versionFormat
-      );
-      nextReleaseTag = canonicalStableTag(nextStableVersion);
+      let allocatedStableVersion = nextStableVersion;
+      while (true) {
+        const tag = `v${allocatedStableVersion}`;
+        const claimSha = tagClaims.get(tag);
+        if (!claimSha || claimSha === sourceSha) {
+          nextStableVersion = allocatedStableVersion;
+          nextReleaseVersion = formatStableVersion(
+            allocatedStableVersion,
+            configuration.versionFormat
+          );
+          nextReleaseTag = tag;
+          break;
+        }
+        allocatedStableVersion = nextVersion(allocatedStableVersion, "patch");
+      }
     } else {
       const matchingRerun = candidateReleases.find(
         (release) => release.channel === channel && release.sha === sourceSha

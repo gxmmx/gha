@@ -68,6 +68,7 @@ export interface AttemptRecord {
   plan: ReleasePlan;
   asset_manifest?: AssetManifest;
   registry_receipt?: RegistryReceipt;
+  abandoned?: { reason: string; at: string };
 }
 
 export const attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
@@ -251,6 +252,11 @@ export async function establishAttempt(args: {
   if (existingDrafts.length === 1) {
     const release = existingDrafts[0];
     const record = parseAttempt(release.body);
+    if (record?.abandoned) {
+      throw new Error(
+        `Release attempt ${record.attempt_id} was abandoned: ${record.abandoned.reason}`,
+      );
+    }
     if (
       !record ||
       record.source_sha !== plan.source.sha ||

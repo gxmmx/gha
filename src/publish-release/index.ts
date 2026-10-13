@@ -128,6 +128,11 @@ function validatePlan(args: {
   ) {
     throw new Error("release_plan is not a valid prepared release plan");
   }
+  if (record.abandoned) {
+    throw new Error(
+      `Release attempt was abandoned: ${record.abandoned.reason}`,
+    );
+  }
   if (
     plan.attempt_id !== attemptId ||
     record.attempt_id !== attemptId ||

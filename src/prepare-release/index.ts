@@ -7,6 +7,12 @@ import {
   resolveChannelConfiguration,
   type ReleaseChannel,
 } from "../get-next-version/channels";
+import {
+  createGitHubOperations,
+  listRepositoryReleases,
+  type GitHubClient,
+} from "../github/operations.js";
+import { compareStableVersions } from "../get-next-version/versions.js";
 
 type Bump = "none" | "patch" | "minor" | "major";
 type Channel = Exclude<ReleaseChannel, null>;
@@ -185,17 +191,8 @@ function parseDecision(description: string | null): {
   };
 }
 
-function compareStableVersions(left: string, right: string): number {
-  const a = left.split(".").map(Number);
-  const b = right.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] !== b[index]) return a[index] - b[index];
-  }
-  return 0;
-}
-
 async function assertStablePredecessorsResolved(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   history: Array<{ sha: string; commit: { message: string } }>;
@@ -222,11 +219,7 @@ async function assertStablePredecessorsResolved(args: {
   );
   if (predecessorHistory.length === 0) return;
   if (baselineIndex < 0) {
-    const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
-      owner,
-      repo,
-      per_page: 100,
-    });
+    const releases = await listRepositoryReleases({ octokit, owner, repo });
     for (const release of releases) {
       if (!release.draft) continue;
       const attempt = parseAttempt(release.body);
@@ -260,10 +253,10 @@ async function assertStablePredecessorsResolved(args: {
   );
 
   const trackedLength = predecessorHistory.length;
-  const releases = (await octokit.paginate(octokit.rest.repos.listReleases, {
+  const releases = (await listRepositoryReleases({
+    octokit,
     owner,
     repo,
-    per_page: 100,
   })) as Array<{
     id: number;
     draft: boolean;
@@ -345,7 +338,7 @@ async function assertStablePredecessorsResolved(args: {
 
 async function preparePush(args: {
   context: typeof github.context;
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   targetBranch: string;
@@ -612,9 +605,8 @@ async function preparePush(args: {
 
 async function main(): Promise<void> {
   const context = github.context;
-  const { owner, repo } = context.repo;
   const token = core.getInput("github_token", { required: true });
-  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
+  const { octokit, owner, repo } = createGitHubOperations(token);
   const repository = await octokit.rest.repos.get({ owner, repo });
   const configuration = resolveChannelConfiguration({
     defaultBranch: repository.data.default_branch,

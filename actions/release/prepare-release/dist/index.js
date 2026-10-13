@@ -27160,6 +27160,23 @@ var CommitParser = class {
   }
 };
 
+// src/github/operations.ts
+function createGitHubOperations(token) {
+  const context3 = context2;
+  return {
+    octokit: getOctokit(token, { baseUrl: context3.apiUrl }),
+    owner: context3.repo.owner,
+    repo: context3.repo.repo
+  };
+}
+async function listRepositoryReleases(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listReleases, {
+    owner: args.owner,
+    repo: args.repo,
+    per_page: 100
+  });
+}
+
 // src/prepare-release/attempt.ts
 var attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
 var parser = new CommitParser();
@@ -27290,11 +27307,7 @@ async function establishAttempt(args) {
     );
   }
   const id = attemptId(tag, plan.source.sha);
-  const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
-    owner,
-    repo,
-    per_page: 100
-  });
+  const releases = await listRepositoryReleases({ octokit, owner, repo });
   const matching = releases.filter((release) => release.tag_name === tag);
   const published = matching.filter((release) => !release.draft);
   const existingDrafts = matching.filter((release) => release.draft);
@@ -27445,6 +27458,24 @@ function channelForBranch(configuration, branch) {
   return null;
 }
 
+// src/get-next-version/versions.ts
+var stableSemver = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+function parseStableSemver(version) {
+  const match = stableSemver.exec(version);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
+}
+function compareStableVersions(left, right) {
+  const a = parseStableSemver(left);
+  const b = parseStableSemver(right);
+  if (!a || !b) throw new Error("Cannot compare invalid stable versions");
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+
 // src/prepare-release/index.ts
 var parser2 = new CommitParser({
   headerPattern: /^([A-Za-z][A-Za-z0-9-]*)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
@@ -27547,14 +27578,6 @@ function parseDecision(description) {
     bump: match[2]
   };
 }
-function compareStableVersions(left, right) {
-  const a = left.split(".").map(Number);
-  const b = right.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] !== b[index]) return a[index] - b[index];
-  }
-  return 0;
-}
 async function assertStablePredecessorsResolved(args) {
   const { octokit, owner, repo, history, baselineSha, currentSha } = args;
   const currentIndex = history.findIndex((entry) => entry.sha === currentSha);
@@ -27573,11 +27596,7 @@ async function assertStablePredecessorsResolved(args) {
   );
   if (predecessorHistory.length === 0) return;
   if (baselineIndex < 0) {
-    const releases2 = await octokit.paginate(octokit.rest.repos.listReleases, {
-      owner,
-      repo,
-      per_page: 100
-    });
+    const releases2 = await listRepositoryReleases({ octokit, owner, repo });
     for (const release of releases2) {
       if (!release.draft) continue;
       const attempt = parseAttempt(release.body);
@@ -27600,10 +27619,10 @@ async function assertStablePredecessorsResolved(args) {
     })
   );
   const trackedLength = predecessorHistory.length;
-  const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
+  const releases = await listRepositoryReleases({
+    octokit,
     owner,
-    repo,
-    per_page: 100
+    repo
   });
   const attempts = releases.flatMap((release) => {
     const attempt = parseAttempt(release.body);
@@ -27888,9 +27907,8 @@ async function preparePush(args) {
 }
 async function main() {
   const context3 = context2;
-  const { owner, repo } = context3.repo;
   const token = core.getInput("github_token", { required: true });
-  const octokit = getOctokit(token, { baseUrl: context3.apiUrl });
+  const { octokit, owner, repo } = createGitHubOperations(token);
   const repository = await octokit.rest.repos.get({ owner, repo });
   const configuration = resolveChannelConfiguration({
     defaultBranch: repository.data.default_branch,

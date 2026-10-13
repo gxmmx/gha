@@ -21,9 +21,15 @@ import {
   previewBuildVersion,
   type VersionFormat,
 } from "./version-profile.js";
+import {
+  createGitHubOperations,
+  listRepositoryReleases,
+  type GitHubClient,
+} from "../github/operations.js";
 
 type Bump = "none" | "patch" | "minor" | "major";
-type Reason = "release" | "preview" | "no-changes" | "unmatched-branch";
+type Reason =
+  "release" | "preview" | "no-changes" | "suppressed" | "unmatched-branch";
 
 interface ReleasePlan {
   schema_version: 1;
@@ -76,6 +82,19 @@ interface RepositoryTag {
 interface CommitEntry {
   sha: string;
   commit: { message: string };
+}
+
+interface AssociatedPullRequest {
+  merged_at: string | null;
+  merge_commit_sha: string | null;
+  base?: { ref?: string };
+  labels?: Array<{ name: string }>;
+}
+
+interface CommitStatus {
+  context: string;
+  state: string;
+  description: string | null;
 }
 
 const parser = new CommitParser({
@@ -216,6 +235,48 @@ function publishOutputs(plan: ReleasePlan): void {
   core.setOutput("release_plan", JSON.stringify(plan));
 }
 
+async function pushIsSuppressed(args: {
+  octokit: GitHubClient;
+  owner: string;
+  repo: string;
+  sourceSha: string;
+  targetBranch: string;
+  channel: Exclude<ReleaseChannel, null>;
+  noReleaseLabel: string;
+}): Promise<boolean> {
+  const { octokit, owner, repo, sourceSha, targetBranch, channel } = args;
+  const contextName = `gha/release-decision/${channel}`;
+  const statuses = (await octokit.paginate(
+    octokit.rest.repos.listCommitStatusesForRef,
+    { owner, repo, ref: sourceSha, per_page: 100 },
+  )) as CommitStatus[];
+  const recorded = statuses.find((status) => status.context === contextName);
+  if (recorded?.state === "success") {
+    const match =
+      /^v1;reason=(release|no-changes|suppressed);bump=(none|patch|minor|major)$/.exec(
+        recorded.description ?? "",
+      );
+    if (!match) throw new Error("Recorded release decision status is invalid");
+    return match[1] === "suppressed";
+  }
+
+  const associated = (await octokit.paginate(
+    octokit.rest.repos.listPullRequestsAssociatedWithCommit,
+    { owner, repo, commit_sha: sourceSha },
+  )) as AssociatedPullRequest[];
+  const matching = associated.filter(
+    (pull) =>
+      pull.merged_at !== null &&
+      pull.merge_commit_sha === sourceSha &&
+      pull.base?.ref === targetBranch,
+  );
+  return (
+    matching.length === 1 &&
+    matching[0].labels?.some((label) => label.name === args.noReleaseLabel) ===
+      true
+  );
+}
+
 function recordedPlanForSource(args: {
   releases: StableRelease[];
   sourceSha: string;
@@ -279,9 +340,8 @@ function recordedPlanForSource(args: {
 
 async function main(): Promise<void> {
   const context = github.context;
-  const { owner, repo: name } = context.repo;
   const token = core.getInput("github_token", { required: true });
-  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
+  const { octokit, owner, repo: name } = createGitHubOperations(token);
   const repository = await octokit.rest.repos.get({ owner, repo: name });
   const configuration = resolveChannelConfiguration({
     defaultBranch: repository.data.default_branch,
@@ -346,11 +406,7 @@ async function main(): Promise<void> {
   }
 
   const [releases, commits, tags] = await Promise.all([
-    octokit.paginate(octokit.rest.repos.listReleases, {
-      owner,
-      repo: name,
-      per_page: 100,
-    }),
+    listRepositoryReleases({ octokit, owner, repo: name }),
     octokit.paginate(octokit.rest.repos.listCommits, {
       owner,
       repo: name,
@@ -376,6 +432,17 @@ async function main(): Promise<void> {
       return;
     }
   }
+  const suppressedPush =
+    context.eventName === "push" &&
+    (await pushIsSuppressed({
+      octokit,
+      owner,
+      repo: name,
+      sourceSha,
+      targetBranch,
+      channel,
+      noReleaseLabel: core.getInput("no_release_label") || "no-release",
+    }));
   const commitPositions = new Map(
     commits.map((commit, index) => [commit.sha, index]),
   );
@@ -468,8 +535,8 @@ async function main(): Promise<void> {
 
   let nextStableVersion =
     bump === "none" ? null : nextVersion(stableBase, bump);
-  const releaseRequired = !preview && bump !== "none";
-  const reason: Reason = preview
+  let releaseRequired = !preview && bump !== "none";
+  let reason: Reason = preview
     ? "preview"
     : bump === "none"
       ? "no-changes"
@@ -521,10 +588,10 @@ async function main(): Promise<void> {
         canonicalCandidateTag(nextStableVersion, channel, counter);
     }
   }
-  const formattedNextStableVersion = nextStableVersion
+  let formattedNextStableVersion = nextStableVersion
     ? formatStableVersion(nextStableVersion, configuration.versionFormat)
     : null;
-  const buildVersion = preview
+  let buildVersion = preview
     ? previewBuildVersion({
         format: configuration.versionFormat,
         prospectiveVersion: formattedNextStableVersion,
@@ -539,6 +606,20 @@ async function main(): Promise<void> {
         sourceSha,
         context.runId,
       ));
+  if (suppressedPush) {
+    bump = "none";
+    reason = "suppressed";
+    releaseRequired = false;
+    nextStableVersion = null;
+    formattedNextStableVersion = null;
+    nextReleaseVersion = null;
+    nextReleaseTag = null;
+    buildVersion = fallbackBuildVersion(
+      configuration.versionFormat,
+      sourceSha,
+      context.runId,
+    );
+  }
   const plan = makePlan({
     owner,
     name,

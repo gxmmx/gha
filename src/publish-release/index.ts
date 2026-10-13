@@ -10,6 +10,12 @@ import {
   type ReleasePlan,
   type StagedAsset,
 } from "../prepare-release/attempt.js";
+import {
+  createGitHubOperations,
+  listRepositoryReleases,
+  type GitHubClient,
+} from "../github/operations.js";
+import { compareStableVersions } from "../get-next-version/versions.js";
 
 const receiptAssetName = "release-receipt.json";
 const receiptSectionMarker = "<!-- gxmmx-registry-receipt:v1 -->";
@@ -169,17 +175,8 @@ function stableMajor(version: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-function compareStableVersion(left: string, right: string): number {
-  const a = left.split(".").map(Number);
-  const b = right.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] !== b[index]) return a[index] - b[index];
-  }
-  return 0;
-}
-
 async function setMajorAlias(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   major: number;
@@ -225,17 +222,13 @@ async function setMajorAlias(args: {
 }
 
 async function verifyPreviousMajorAliases(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   currentReleaseId: number;
 }): Promise<void> {
   const { octokit, owner, repo, currentReleaseId } = args;
-  const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
-    owner,
-    repo,
-    per_page: 100,
-  });
+  const releases = await listRepositoryReleases({ octokit, owner, repo });
   const latestByMajor = new Map<
     number,
     {
@@ -254,7 +247,7 @@ async function verifyPreviousMajorAliases(args: {
     const previous = latestByMajor.get(major);
     if (
       !previous ||
-      compareStableVersion(record.version, previous.version) > 0
+      compareStableVersions(record.version, previous.version) > 0
     ) {
       latestByMajor.set(major, {
         releaseId: release.id,
@@ -286,7 +279,7 @@ async function verifyPreviousMajorAliases(args: {
 }
 
 async function assertLatestForMajor(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   releaseId: number;
@@ -296,11 +289,7 @@ async function assertLatestForMajor(args: {
   const major = stableMajor(version);
   if (major === null)
     throw new Error(`Invalid stable release version ${version}`);
-  const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
-    owner,
-    repo,
-    per_page: 100,
-  });
+  const releases = await listRepositoryReleases({ octokit, owner, repo });
   const later = releases.find((release) => {
     if (release.id === releaseId || release.draft || release.prerelease)
       return false;
@@ -308,7 +297,7 @@ async function assertLatestForMajor(args: {
     return (
       record !== null &&
       stableMajor(record.version) === major &&
-      compareStableVersion(record.version, version) > 0
+      compareStableVersions(record.version, version) > 0
     );
   });
   if (later) {
@@ -319,7 +308,7 @@ async function assertLatestForMajor(args: {
 }
 
 async function uploadReceipt(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   releaseId: number;
@@ -340,7 +329,7 @@ async function uploadReceipt(args: {
 }
 
 async function publishRelease(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   releaseId: number;
@@ -635,17 +624,13 @@ function receiptAsset(receipt: RegistryReceipt): StagedAsset {
 }
 
 async function main(): Promise<void> {
-  const context = github.context;
-  const { owner, repo } = context.repo;
+  const { octokit, owner, repo } = createGitHubOperations(
+    core.getInput("github_token", { required: true }),
+  );
   const plan = parsePlan(core.getInput("release_plan", { required: true }));
   const receipt = parseReceipt(core.getInput("registry_receipt"));
   const result = await publishRelease({
-    octokit: github.getOctokit(
-      core.getInput("github_token", { required: true }),
-      {
-        baseUrl: context.apiUrl,
-      },
-    ),
+    octokit,
     owner,
     repo,
     releaseId: Number(core.getInput("draft_release_id", { required: true })),

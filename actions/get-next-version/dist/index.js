@@ -27262,6 +27262,23 @@ function formatStableVersion(version, _format) {
   return version;
 }
 
+// src/github/operations.ts
+function createGitHubOperations(token) {
+  const context3 = context2;
+  return {
+    octokit: getOctokit(token, { baseUrl: context3.apiUrl }),
+    owner: context3.repo.owner,
+    repo: context3.repo.repo
+  };
+}
+async function listRepositoryReleases(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listReleases, {
+    owner: args.owner,
+    repo: args.repo,
+    per_page: 100
+  });
+}
+
 // src/get-next-version/index.ts
 var parser = new CommitParser({
   headerPattern: /^([A-Za-z][A-Za-z0-9-]*)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
@@ -27361,6 +27378,30 @@ function publishOutputs(plan) {
   core.setOutput("reason", plan.decision.reason);
   core.setOutput("release_plan", JSON.stringify(plan));
 }
+async function pushIsSuppressed(args) {
+  const { octokit, owner, repo, sourceSha, targetBranch, channel } = args;
+  const contextName = `gha/release-decision/${channel}`;
+  const statuses = await octokit.paginate(
+    octokit.rest.repos.listCommitStatusesForRef,
+    { owner, repo, ref: sourceSha, per_page: 100 }
+  );
+  const recorded = statuses.find((status) => status.context === contextName);
+  if (recorded?.state === "success") {
+    const match = /^v1;reason=(release|no-changes|suppressed);bump=(none|patch|minor|major)$/.exec(
+      recorded.description ?? ""
+    );
+    if (!match) throw new Error("Recorded release decision status is invalid");
+    return match[1] === "suppressed";
+  }
+  const associated = await octokit.paginate(
+    octokit.rest.repos.listPullRequestsAssociatedWithCommit,
+    { owner, repo, commit_sha: sourceSha }
+  );
+  const matching = associated.filter(
+    (pull) => pull.merged_at !== null && pull.merge_commit_sha === sourceSha && pull.base?.ref === targetBranch
+  );
+  return matching.length === 1 && matching[0].labels?.some((label) => label.name === args.noReleaseLabel) === true;
+}
 function recordedPlanForSource(args) {
   const marker = "<!-- gxmmx-release-attempt:v1 -->";
   const configuration = {
@@ -27390,9 +27431,8 @@ function recordedPlanForSource(args) {
 }
 async function main() {
   const context3 = context2;
-  const { owner, repo: name } = context3.repo;
   const token = core.getInput("github_token", { required: true });
-  const octokit = getOctokit(token, { baseUrl: context3.apiUrl });
+  const { octokit, owner, repo: name } = createGitHubOperations(token);
   const repository = await octokit.rest.repos.get({ owner, repo: name });
   const configuration = resolveChannelConfiguration({
     defaultBranch: repository.data.default_branch,
@@ -27451,11 +27491,7 @@ async function main() {
     return;
   }
   const [releases, commits, tags] = await Promise.all([
-    octokit.paginate(octokit.rest.repos.listReleases, {
-      owner,
-      repo: name,
-      per_page: 100
-    }),
+    listRepositoryReleases({ octokit, owner, repo: name }),
     octokit.paginate(octokit.rest.repos.listCommits, {
       owner,
       repo: name,
@@ -27481,6 +27517,15 @@ async function main() {
       return;
     }
   }
+  const suppressedPush = context3.eventName === "push" && await pushIsSuppressed({
+    octokit,
+    owner,
+    repo: name,
+    sourceSha,
+    targetBranch,
+    channel,
+    noReleaseLabel: core.getInput("no_release_label") || "no-release"
+  });
   const commitPositions = new Map(
     commits.map((commit, index) => [commit.sha, index])
   );
@@ -27545,8 +27590,8 @@ async function main() {
     bump = stronger(bump, bumpForMessage(commit.commit.message));
   }
   let nextStableVersion = bump === "none" ? null : nextVersion(stableBase, bump);
-  const releaseRequired = !preview && bump !== "none";
-  const reason = preview ? "preview" : bump === "none" ? "no-changes" : "release";
+  let releaseRequired = !preview && bump !== "none";
+  let reason = preview ? "preview" : bump === "none" ? "no-changes" : "release";
   let nextReleaseVersion = null;
   let nextReleaseTag = null;
   if (releaseRequired && nextStableVersion) {
@@ -27586,8 +27631,8 @@ async function main() {
       nextReleaseTag = matchingRerun?.tag ?? canonicalCandidateTag(nextStableVersion, channel, counter);
     }
   }
-  const formattedNextStableVersion = nextStableVersion ? formatStableVersion(nextStableVersion, configuration.versionFormat) : null;
-  const buildVersion = preview ? previewBuildVersion({
+  let formattedNextStableVersion = nextStableVersion ? formatStableVersion(nextStableVersion, configuration.versionFormat) : null;
+  let buildVersion = preview ? previewBuildVersion({
     format: configuration.versionFormat,
     prospectiveVersion: formattedNextStableVersion,
     pullRequest,
@@ -27598,6 +27643,20 @@ async function main() {
     sourceSha,
     context3.runId
   );
+  if (suppressedPush) {
+    bump = "none";
+    reason = "suppressed";
+    releaseRequired = false;
+    nextStableVersion = null;
+    formattedNextStableVersion = null;
+    nextReleaseVersion = null;
+    nextReleaseTag = null;
+    buildVersion = fallbackBuildVersion(
+      configuration.versionFormat,
+      sourceSha,
+      context3.runId
+    );
+  }
   const plan = makePlan({
     owner,
     name,

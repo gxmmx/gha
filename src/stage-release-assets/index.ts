@@ -10,6 +10,8 @@ import {
   type AttemptRecord,
   type StagedAsset,
 } from "../prepare-release/attempt.js";
+import type { GitHubClient } from "../github/operations.js";
+import { createGitHubOperations } from "../github/operations.js";
 
 const checksumName = "SHA256SUMS";
 
@@ -119,7 +121,7 @@ function digestOf(asset: { digest?: string | null }): string | null {
 }
 
 async function putAsset(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   releaseId: number;
@@ -141,7 +143,7 @@ async function putAsset(args: {
 }
 
 async function stageReleaseAssets(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   releaseId: number;
@@ -255,13 +257,8 @@ async function stageReleaseAssets(args: {
 }
 
 async function main(): Promise<void> {
-  const context = github.context;
-  const { owner, repo } = context.repo;
-  const octokit = github.getOctokit(
+  const { octokit, owner, repo } = createGitHubOperations(
     core.getInput("github_token", { required: true }),
-    {
-      baseUrl: context.apiUrl,
-    },
   );
   const result = await stageReleaseAssets({
     octokit,

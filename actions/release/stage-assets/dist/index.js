@@ -27165,6 +27165,16 @@ var CommitParser = class {
   }
 };
 
+// src/github/operations.ts
+function createGitHubOperations(token) {
+  const context3 = context2;
+  return {
+    octokit: getOctokit(token, { baseUrl: context3.apiUrl }),
+    owner: context3.repo.owner,
+    repo: context3.repo.repo
+  };
+}
+
 // src/prepare-release/attempt.ts
 var attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
 var parser = new CommitParser();
@@ -27386,13 +27396,8 @@ async function stageReleaseAssets(args) {
   };
 }
 async function main() {
-  const context3 = context2;
-  const { owner, repo } = context3.repo;
-  const octokit = getOctokit(
-    core.getInput("github_token", { required: true }),
-    {
-      baseUrl: context3.apiUrl
-    }
+  const { octokit, owner, repo } = createGitHubOperations(
+    core.getInput("github_token", { required: true })
   );
   const result = await stageReleaseAssets({
     octokit,

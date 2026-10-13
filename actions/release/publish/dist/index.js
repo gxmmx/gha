@@ -27163,6 +27163,23 @@ var CommitParser = class {
   }
 };
 
+// src/github/operations.ts
+function createGitHubOperations(token) {
+  const context3 = context2;
+  return {
+    octokit: getOctokit(token, { baseUrl: context3.apiUrl }),
+    owner: context3.repo.owner,
+    repo: context3.repo.repo
+  };
+}
+async function listRepositoryReleases(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listReleases, {
+    owner: args.owner,
+    repo: args.repo,
+    per_page: 100
+  });
+}
+
 // src/prepare-release/attempt.ts
 var attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
 var parser = new CommitParser();
@@ -27184,6 +27201,24 @@ function serializeAttemptBody(body, record) {
 
 ${attemptMarker}
 ${JSON.stringify(record)}`;
+}
+
+// src/get-next-version/versions.ts
+var stableSemver = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+function parseStableSemver(version) {
+  const match = stableSemver.exec(version);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
+}
+function compareStableVersions(left, right) {
+  const a = parseStableSemver(left);
+  const b = parseStableSemver(right);
+  if (!a || !b) throw new Error("Cannot compare invalid stable versions");
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 }
 
 // src/publish-release/index.ts
@@ -27287,14 +27322,6 @@ function stableMajor(version) {
   const match = /^(0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.exec(version);
   return match ? Number(match[1]) : null;
 }
-function compareStableVersion(left, right) {
-  const a = left.split(".").map(Number);
-  const b = right.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] !== b[index]) return a[index] - b[index];
-  }
-  return 0;
-}
 async function setMajorAlias(args) {
   const { octokit, owner, repo, major, sourceSha } = args;
   const ref = `tags/v${major}`;
@@ -27336,11 +27363,7 @@ async function setMajorAlias(args) {
 }
 async function verifyPreviousMajorAliases(args) {
   const { octokit, owner, repo, currentReleaseId } = args;
-  const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
-    owner,
-    repo,
-    per_page: 100
-  });
+  const releases = await listRepositoryReleases({ octokit, owner, repo });
   const latestByMajor = /* @__PURE__ */ new Map();
   for (const release of releases) {
     if (release.id === currentReleaseId || release.draft || release.prerelease)
@@ -27349,7 +27372,7 @@ async function verifyPreviousMajorAliases(args) {
     const major = record ? stableMajor(record.version) : null;
     if (major === null || !record) continue;
     const previous = latestByMajor.get(major);
-    if (!previous || compareStableVersion(record.version, previous.version) > 0) {
+    if (!previous || compareStableVersions(record.version, previous.version) > 0) {
       latestByMajor.set(major, {
         releaseId: release.id,
         version: record.version,
@@ -27383,16 +27406,12 @@ async function assertLatestForMajor(args) {
   const major = stableMajor(version);
   if (major === null)
     throw new Error(`Invalid stable release version ${version}`);
-  const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
-    owner,
-    repo,
-    per_page: 100
-  });
+  const releases = await listRepositoryReleases({ octokit, owner, repo });
   const later = releases.find((release) => {
     if (release.id === releaseId || release.draft || release.prerelease)
       return false;
     const record = parseAttempt(release.body);
-    return record !== null && stableMajor(record.version) === major && compareStableVersion(record.version, version) > 0;
+    return record !== null && stableMajor(record.version) === major && compareStableVersions(record.version, version) > 0;
   });
   if (later) {
     throw new Error(
@@ -27660,17 +27679,13 @@ function receiptAsset(receipt) {
   };
 }
 async function main() {
-  const context3 = context2;
-  const { owner, repo } = context3.repo;
+  const { octokit, owner, repo } = createGitHubOperations(
+    core.getInput("github_token", { required: true })
+  );
   const plan = parsePlan(core.getInput("release_plan", { required: true }));
   const receipt = parseReceipt(core.getInput("registry_receipt"));
   const result = await publishRelease({
-    octokit: getOctokit(
-      core.getInput("github_token", { required: true }),
-      {
-        baseUrl: context3.apiUrl
-      }
-    ),
+    octokit,
     owner,
     repo,
     releaseId: Number(core.getInput("draft_release_id", { required: true })),

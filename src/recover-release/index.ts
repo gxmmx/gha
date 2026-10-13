@@ -1,11 +1,14 @@
 import * as core from "@actions/core";
-import * as github from "@actions/github";
 import {
   attemptMarker,
   parseAttempt,
   serializeAttemptBody,
   type AttemptRecord,
 } from "../prepare-release/attempt.js";
+import {
+  createGitHubOperations,
+  listRepositoryReleases,
+} from "../github/operations.js";
 
 type Operation = "resume" | "abandon";
 
@@ -84,18 +87,10 @@ async function main(): Promise<void> {
     throw new Error("reason is required when operation is abandon");
   }
 
-  const { owner, repo } = github.context.repo;
-  const octokit = github.getOctokit(
+  const { octokit, owner, repo } = createGitHubOperations(
     core.getInput("github_token", { required: true }),
-    {
-      baseUrl: github.context.apiUrl,
-    },
   );
-  const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
-    owner,
-    repo,
-    per_page: 100,
-  });
+  const releases = await listRepositoryReleases({ octokit, owner, repo });
   const matching = releases.flatMap((release) => {
     const record = parseAttempt(release.body);
     return record?.attempt_id === attemptId ? [{ release, record }] : [];

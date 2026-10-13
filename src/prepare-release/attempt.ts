@@ -1,5 +1,8 @@
-import * as github from "@actions/github";
 import { CommitParser } from "conventional-commits-parser";
+import {
+  listRepositoryReleases,
+  type GitHubClient,
+} from "../github/operations.js";
 
 export interface ReleasePlan {
   schema_version: 1;
@@ -160,7 +163,7 @@ function samePlan(left: ReleasePlan, right: ReleasePlan): boolean {
 }
 
 async function ensureTagClaim(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   tag: string;
@@ -207,7 +210,7 @@ async function ensureTagClaim(args: {
 }
 
 export async function establishAttempt(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   plan: ReleasePlan;
@@ -237,11 +240,7 @@ export async function establishAttempt(args: {
     );
   }
   const id = attemptId(tag, plan.source.sha);
-  const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
-    owner,
-    repo,
-    per_page: 100,
-  });
+  const releases = await listRepositoryReleases({ octokit, owner, repo });
   const matching = releases.filter((release) => release.tag_name === tag);
   const published = matching.filter((release) => !release.draft);
   const existingDrafts = matching.filter((release) => release.draft);

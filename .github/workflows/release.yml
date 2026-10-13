@@ -100,6 +100,7 @@ jobs:
           beta_branch: ${{ inputs.beta_branch }}
           rc_branch: ${{ inputs.rc_branch }}
           version_format: ${{ inputs.version_format }}
+          no_release_label: ${{ inputs.no_release_label }}
 
       - id: prepare
         uses: $/actions/release/prepare-release

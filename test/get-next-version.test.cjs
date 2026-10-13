@@ -160,6 +160,113 @@ test("stable push plans the strongest bump across unreleased commits", async () 
   }
 });
 
+test("stable planner reuses the recorded plan for a published source SHA retry", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
+  const outputFile = path.join(temp, "outputs");
+  writeFileSync(outputFile, "");
+  const sourceSha = "1234567890abcdef1234567890abcdef12345678";
+  const recordedPlan = {
+    schema_version: 1,
+    repository: { owner: "gxmmx", name: "testproject" },
+    source: {
+      event: "push",
+      run_id: 1234,
+      sha: sourceSha,
+      target_branch: "main",
+      pull_request: null,
+    },
+    configuration: {
+      stable_branch: "main",
+      alpha_branch: null,
+      beta_branch: null,
+      rc_branch: null,
+      version_format: "semver",
+    },
+    history: {
+      stable_base_version: "0.1.0",
+      stable_release_tag: "v0.1.0",
+      stable_release_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    },
+    decision: {
+      channel: "stable",
+      bump: "minor",
+      reason: "release",
+      release_required: true,
+    },
+    versions: {
+      build_version: "0.2.0",
+      next_stable_version: "0.2.0",
+      next_release_version: "0.2.0",
+      next_release_tag: "v0.2.0",
+    },
+  };
+  const attempt = {
+    schema_version: 1,
+    attempt_id: "v0.2.0@1234567890ab",
+    tag: "v0.2.0",
+    version: "0.2.0",
+    source_sha: sourceSha,
+    plan: { ...recordedPlan, attempt_id: "v0.2.0@1234567890ab" },
+  };
+  const releaseBody = `## Features\n\n- add endpoint\n\n<!-- gxmmx-release-attempt:v1 -->\n${JSON.stringify(attempt)}`;
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/repos/gxmmx/testproject") {
+      response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end(
+        JSON.stringify([
+          {
+            id: 42,
+            tag_name: "v0.2.0",
+            draft: false,
+            prerelease: false,
+            body: releaseBody,
+          },
+        ]),
+      );
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
+      response.end(
+        JSON.stringify([{ name: "v0.2.0", commit: { sha: sourceSha } }]),
+      );
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
+      response.end(
+        JSON.stringify([
+          { sha: sourceSha, commit: { message: "feat: add endpoint" } },
+        ]),
+      );
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "Not Found" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await execFileAsync(process.execPath, [action], {
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_SHA: sourceSha,
+        GITHUB_REPOSITORY: "gxmmx/testproject",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_RUN_ID: "5678",
+        GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
+        INPUT_GITHUB_TOKEN: "test-token",
+      },
+    });
+    const values = outputsFrom(outputFile);
+    assert.equal(values.release_required, "true");
+    assert.equal(values.next_release_version, "0.2.0");
+    assert.equal(values.next_release_tag, "v0.2.0");
+    assert.deepEqual(JSON.parse(values.release_plan), attempt.plan);
+  } finally {
+    server.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test("stable planner advances past a version tag claimed by another source", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
   const outputFile = path.join(temp, "outputs");

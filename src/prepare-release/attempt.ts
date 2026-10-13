@@ -243,9 +243,41 @@ export async function establishAttempt(args: {
     per_page: 100,
   });
   const matching = releases.filter((release) => release.tag_name === tag);
+  const published = matching.filter((release) => !release.draft);
   const existingDrafts = matching.filter((release) => release.draft);
-  if (matching.some((release) => !release.draft)) {
-    throw new Error(`Release tag ${tag} is already published`);
+  if (published.length > 1) {
+    throw new Error(`Multiple published attempts already exist for ${tag}`);
+  }
+  if (published.length === 1) {
+    const release = published[0];
+    const record = parseAttempt(release.body);
+    if (
+      !record ||
+      record.attempt_id !== id ||
+      record.source_sha !== plan.source.sha ||
+      record.version !== version ||
+      !samePlan(
+        { ...record.plan, attempt_id: undefined },
+        { ...plan, attempt_id: undefined },
+      )
+    ) {
+      throw new Error(
+        `Published release ${tag} belongs to a different source or plan`,
+      );
+    }
+    await ensureTagClaim({
+      octokit,
+      owner,
+      repo,
+      tag,
+      sourceSha: plan.source.sha,
+    });
+    return {
+      plan: { ...plan, attempt_id: record.attempt_id },
+      notes: (release.body ?? "").split(attemptMarker)[0].trim(),
+      attemptId: record.attempt_id,
+      releaseId: release.id,
+    };
   }
   if (existingDrafts.length > 1) {
     throw new Error(`Multiple draft attempts already exist for ${tag}`);

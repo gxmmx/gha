@@ -65,6 +65,7 @@ interface StableRelease {
   tag_name: string;
   prerelease: boolean;
   draft: boolean;
+  body?: string | null;
 }
 
 interface RepositoryTag {
@@ -215,6 +216,67 @@ function publishOutputs(plan: ReleasePlan): void {
   core.setOutput("release_plan", JSON.stringify(plan));
 }
 
+function recordedPlanForSource(args: {
+  releases: StableRelease[];
+  sourceSha: string;
+  targetBranch: string;
+  configuration: ChannelConfiguration;
+  channel: ReleaseChannel;
+}): ReleasePlan | null {
+  const marker = "<!-- gxmmx-release-attempt:v1 -->";
+  const configuration = {
+    stable_branch: args.configuration.stableBranch,
+    alpha_branch: args.configuration.alphaBranch,
+    beta_branch: args.configuration.betaBranch,
+    rc_branch: args.configuration.rcBranch,
+    version_format: args.configuration.versionFormat,
+  };
+
+  for (const release of args.releases) {
+    const markerIndex = release.body?.indexOf(marker) ?? -1;
+    if (markerIndex < 0) continue;
+    const json = release
+      .body!.slice(markerIndex + marker.length)
+      .trim()
+      .split("\n")[0];
+    let record: {
+      schema_version?: number;
+      tag?: string;
+      source_sha?: string;
+      plan?: ReleasePlan;
+    };
+    try {
+      record = JSON.parse(json);
+    } catch {
+      continue;
+    }
+    const plan = record.plan;
+    if (
+      record.schema_version !== 1 ||
+      record.source_sha !== args.sourceSha ||
+      record.tag !== release.tag_name ||
+      plan?.schema_version !== 1 ||
+      plan.repository?.owner !== github.context.repo.owner ||
+      plan.repository?.name !== github.context.repo.repo ||
+      plan.source?.event !== "push" ||
+      plan.source?.sha !== args.sourceSha ||
+      plan.source?.target_branch !== args.targetBranch ||
+      plan.source?.pull_request !== null ||
+      JSON.stringify(plan.configuration) !== JSON.stringify(configuration) ||
+      plan.decision?.channel !== args.channel ||
+      plan.decision?.reason !== "release" ||
+      plan.decision?.release_required !== true ||
+      !plan.versions?.next_release_tag ||
+      plan.versions.next_release_tag !== record.tag ||
+      !plan.versions?.next_release_version
+    ) {
+      continue;
+    }
+    return plan;
+  }
+  return null;
+}
+
 async function main(): Promise<void> {
   const context = github.context;
   const { owner, repo: name } = context.repo;
@@ -301,6 +363,19 @@ async function main(): Promise<void> {
       per_page: 100,
     }),
   ]);
+  if (context.eventName === "push") {
+    const recordedPlan = recordedPlanForSource({
+      releases: releases as StableRelease[],
+      sourceSha,
+      targetBranch,
+      configuration,
+      channel,
+    });
+    if (recordedPlan) {
+      publishOutputs(recordedPlan);
+      return;
+    }
+  }
   const commitPositions = new Map(
     commits.map((commit, index) => [commit.sha, index]),
   );

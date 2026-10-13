@@ -349,6 +349,100 @@ test("release-branch push snapshots the merged PR decision on the exact squash S
   assert.match(result.createdDraft.body, /gxmmx-release-attempt:v1/);
 });
 
+test("release-branch retry reuses the matching published attempt", async () => {
+  const sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const releasePlan = {
+    schema_version: 1,
+    repository: { owner: "gxmmx", name: "testproject" },
+    source: {
+      event: "push",
+      run_id: 1234567,
+      sha,
+      target_branch: "main",
+      pull_request: null,
+    },
+    configuration: {
+      stable_branch: "main",
+      alpha_branch: null,
+      beta_branch: null,
+      rc_branch: null,
+      version_format: "semver",
+    },
+    history: {
+      stable_base_version: "0.1.0",
+      stable_release_tag: "v0.1.0",
+      stable_release_sha: "0000000000000000000000000000000000000000",
+    },
+    decision: {
+      channel: "stable",
+      bump: "minor",
+      reason: "release",
+      release_required: true,
+    },
+    versions: {
+      build_version: "0.2.0",
+      next_stable_version: "0.2.0",
+      next_release_version: "0.2.0",
+      next_release_tag: "v0.2.0",
+    },
+  };
+  const attempt = {
+    schema_version: 1,
+    attempt_id: `v0.2.0@${sha.slice(0, 12)}`,
+    tag: "v0.2.0",
+    version: "0.2.0",
+    source_sha: sha,
+    plan: { ...releasePlan, attempt_id: `v0.2.0@${sha.slice(0, 12)}` },
+  };
+  const result = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/main",
+    pushedSha: sha,
+    releasePlan,
+    claimedTagSha: sha,
+    historyEntries: [
+      { sha, commit: { message: "feat: add the endpoint" } },
+      {
+        sha: "0000000000000000000000000000000000000000",
+        commit: { message: "chore: previous stable baseline" },
+      },
+    ],
+    existingReleases: [
+      {
+        id: 55,
+        tag_name: "v0.2.0",
+        draft: false,
+        prerelease: false,
+        body: `## Features\n\n- add the endpoint\n\n<!-- gxmmx-release-attempt:v1 -->\n${JSON.stringify(attempt)}`,
+      },
+    ],
+    associatedPulls: [
+      {
+        number: 42,
+        merged_at: "2026-10-13T12:00:00Z",
+        merge_commit_sha: sha,
+        base: { ref: "main" },
+      },
+    ],
+  });
+  assert.ifError(
+    result.error &&
+      new Error(
+        `${errorText(result.error)}\n${JSON.stringify(result.requests)}`,
+      ),
+  );
+  assert.equal(result.values.attempt_id, attempt.attempt_id);
+  assert.equal(result.values.draft_release_id, "55");
+  assert.equal(result.createdDraft, undefined);
+  assert.equal(
+    result.requests.some(
+      (request) =>
+        request.method === "POST" && request.url.endsWith("/releases"),
+    ),
+    false,
+  );
+});
+
 function predecessorFixture(statuses = [], existingReleases = []) {
   const pushedSha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
   const predecessorSha = "1111111111111111111111111111111111111111";

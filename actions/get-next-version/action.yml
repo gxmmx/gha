@@ -1,5 +1,12 @@
 name: Get next version
 description: Produce a build version and read-only release plan from GitHub context.
+inputs:
+  github_token:
+    description: Token used to read repository, pull request, and commit history.
+    required: true
+  stable_branch:
+    description: Stable release branch. Defaults to the repository default branch.
+    required: false
 outputs:
   build_version:
     description: Version identifier for this build.

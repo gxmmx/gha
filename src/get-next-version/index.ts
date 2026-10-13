@@ -15,6 +15,12 @@ import {
   parseCandidateTag,
   parseStableSemver,
 } from "./versions.js";
+import {
+  canonicalStableTag,
+  fallbackBuildVersion,
+  previewBuildVersion,
+  type VersionFormat,
+} from "./version-profile.js";
 
 type Bump = "none" | "patch" | "minor" | "major";
 type Reason = "release" | "preview" | "no-changes" | "unmatched-branch";
@@ -34,7 +40,7 @@ interface ReleasePlan {
     alpha_branch: string | null;
     beta_branch: string | null;
     rc_branch: string | null;
-    version_format: "semver" | "pep440";
+    version_format: VersionFormat;
   };
   history: {
     stable_base_version: string | null;
@@ -71,10 +77,6 @@ const parser = new CommitParser({
   headerCorrespondence: ["type", "scope", "breaking", "subject"],
 });
 const malformedConventionalHeader = /^[A-Za-z][A-Za-z0-9-]*(?:\(|!?:)/;
-function fallbackVersion(sha: string): string {
-  return `sha-${sha.slice(0, 8)}`;
-}
-
 function stronger(left: Bump, right: Bump): Bump {
   const strength: Record<Bump, number> = {
     none: 0,
@@ -263,7 +265,11 @@ async function main(): Promise<void> {
       bump: "none",
       reason: "unmatched-branch",
       releaseRequired: false,
-      buildVersion: fallbackVersion(sourceSha),
+      buildVersion: fallbackBuildVersion(
+        configuration.versionFormat,
+        sourceSha,
+        context.runId,
+      ),
       nextStableVersion: null,
       nextReleaseVersion: null,
       nextReleaseTag: null,
@@ -336,8 +342,10 @@ async function main(): Promise<void> {
   const latestStableRelease = stableReleases.sort((left, right) =>
     compareStableVersions(right.version, left.version),
   )[0];
+  const preview = pullRequest !== null;
   if (
     channel !== "stable" &&
+    !preview &&
     latestStableRelease &&
     latestStableRelease.position === undefined
   ) {
@@ -361,7 +369,6 @@ async function main(): Promise<void> {
 
   const nextStableVersion =
     bump === "none" ? null : nextVersion(stableBase, bump);
-  const preview = pullRequest !== null;
   const releaseRequired = !preview && bump !== "none";
   const reason: Reason = preview
     ? "preview"
@@ -376,7 +383,7 @@ async function main(): Promise<void> {
         nextStableVersion,
         configuration.versionFormat,
       );
-      nextReleaseTag = `v${nextStableVersion}`;
+      nextReleaseTag = canonicalStableTag(nextStableVersion);
     } else {
       const matchingRerun = candidateReleases.find(
         (release) => release.channel === channel && release.sha === sourceSha,
@@ -408,10 +415,21 @@ async function main(): Promise<void> {
   const formattedNextStableVersion = nextStableVersion
     ? formatStableVersion(nextStableVersion, configuration.versionFormat)
     : null;
-  const buildVersion =
-    nextReleaseVersion ??
-    formattedNextStableVersion ??
-    fallbackVersion(sourceSha);
+  const buildVersion = preview
+    ? previewBuildVersion({
+        format: configuration.versionFormat,
+        prospectiveVersion: formattedNextStableVersion,
+        pullRequest: pullRequest!,
+        sha: sourceSha,
+        runId: context.runId,
+      })
+    : (nextReleaseVersion ??
+      formattedNextStableVersion ??
+      fallbackBuildVersion(
+        configuration.versionFormat,
+        sourceSha,
+        context.runId,
+      ));
   const plan = makePlan({
     owner,
     name,

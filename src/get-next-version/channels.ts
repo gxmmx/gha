@@ -1,5 +1,6 @@
+import { parseVersionFormat, type VersionFormat } from "./version-profile.js";
+
 export type ReleaseChannel = "stable" | "alpha" | "beta" | "rc" | null;
-export type VersionFormat = "semver" | "pep440";
 
 export interface ChannelConfiguration {
   stableBranch: string;
@@ -21,11 +22,7 @@ export function resolveChannelConfiguration(args: {
   const alphaBranch = args.alphaBranchInput || null;
   const betaBranch = args.betaBranchInput || null;
   const rcBranch = args.rcBranchInput || null;
-  const versionFormat = args.versionFormatInput || "semver";
-
-  if (versionFormat !== "semver" && versionFormat !== "pep440") {
-    throw new Error(`Unsupported version_format: ${versionFormat}`);
-  }
+  const versionFormat = parseVersionFormat(args.versionFormatInput);
 
   const candidateBranches = [
     ["alpha", alphaBranch],

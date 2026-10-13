@@ -27160,16 +27160,35 @@ var CommitParser = class {
   }
 };
 
+// src/get-next-version/version-profile.ts
+function parseVersionFormat(input) {
+  if (input === "" || input === "semver") return "semver";
+  if (input === "pep440") return "pep440";
+  throw new Error(`Unsupported version_format: ${input}`);
+}
+function fallbackBuildVersion(format, sha, runId) {
+  return format === "pep440" ? `0.0.0.dev${runId}` : `sha-${sha.slice(0, 8)}`;
+}
+function previewBuildVersion(args) {
+  if (args.prospectiveVersion === null) {
+    return fallbackBuildVersion(args.format, args.sha, args.runId);
+  }
+  if (args.format === "pep440") {
+    return `${args.prospectiveVersion}.dev${args.runId}`;
+  }
+  return `${args.prospectiveVersion}-pr.${args.pullRequest}.sha.${args.sha.slice(0, 8)}`;
+}
+function canonicalStableTag(version) {
+  return version === null ? null : `v${version}`;
+}
+
 // src/get-next-version/channels.ts
 function resolveChannelConfiguration(args) {
   const stableBranch = args.stableBranchInput || args.defaultBranch;
   const alphaBranch = args.alphaBranchInput || null;
   const betaBranch = args.betaBranchInput || null;
   const rcBranch = args.rcBranchInput || null;
-  const versionFormat = args.versionFormatInput || "semver";
-  if (versionFormat !== "semver" && versionFormat !== "pep440") {
-    throw new Error(`Unsupported version_format: ${versionFormat}`);
-  }
+  const versionFormat = parseVersionFormat(args.versionFormatInput);
   const candidateBranches = [
     ["alpha", alphaBranch],
     ["beta", betaBranch],
@@ -27252,9 +27271,6 @@ var parser = new CommitParser({
   headerCorrespondence: ["type", "scope", "breaking", "subject"]
 });
 var malformedConventionalHeader = /^[A-Za-z][A-Za-z0-9-]*(?:\(|!?:)/;
-function fallbackVersion(sha) {
-  return `sha-${sha.slice(0, 8)}`;
-}
 function stronger(left, right) {
   const strength = {
     none: 0,
@@ -27398,7 +27414,11 @@ async function main() {
       bump: "none",
       reason: "unmatched-branch",
       releaseRequired: false,
-      buildVersion: fallbackVersion(sourceSha),
+      buildVersion: fallbackBuildVersion(
+        configuration.versionFormat,
+        sourceSha,
+        context3.runId
+      ),
       nextStableVersion: null,
       nextReleaseVersion: null,
       nextReleaseTag: null
@@ -27455,7 +27475,8 @@ async function main() {
   const latestStableRelease = stableReleases.sort(
     (left, right) => compareStableVersions(right.version, left.version)
   )[0];
-  if (channel !== "stable" && latestStableRelease && latestStableRelease.position === void 0) {
+  const preview = pullRequest !== null;
+  if (channel !== "stable" && !preview && latestStableRelease && latestStableRelease.position === void 0) {
     throw new Error(
       `Candidate branch ${targetBranch} is behind the latest stable release ${latestStableRelease.tag}`
     );
@@ -27471,7 +27492,6 @@ async function main() {
     bump = stronger(bump, bumpForMessage(commit.commit.message));
   }
   const nextStableVersion = bump === "none" ? null : nextVersion(stableBase, bump);
-  const preview = pullRequest !== null;
   const releaseRequired = !preview && bump !== "none";
   const reason = preview ? "preview" : bump === "none" ? "no-changes" : "release";
   let nextReleaseVersion = null;
@@ -27482,7 +27502,7 @@ async function main() {
         nextStableVersion,
         configuration.versionFormat
       );
-      nextReleaseTag = `v${nextStableVersion}`;
+      nextReleaseTag = canonicalStableTag(nextStableVersion);
     } else {
       const matchingRerun = candidateReleases.find(
         (release) => release.channel === channel && release.sha === sourceSha
@@ -27504,7 +27524,17 @@ async function main() {
     }
   }
   const formattedNextStableVersion = nextStableVersion ? formatStableVersion(nextStableVersion, configuration.versionFormat) : null;
-  const buildVersion = nextReleaseVersion ?? formattedNextStableVersion ?? fallbackVersion(sourceSha);
+  const buildVersion = preview ? previewBuildVersion({
+    format: configuration.versionFormat,
+    prospectiveVersion: formattedNextStableVersion,
+    pullRequest,
+    sha: sourceSha,
+    runId: context3.runId
+  }) : nextReleaseVersion ?? formattedNextStableVersion ?? fallbackBuildVersion(
+    configuration.versionFormat,
+    sourceSha,
+    context3.runId
+  );
   const plan = makePlan({
     owner,
     name,

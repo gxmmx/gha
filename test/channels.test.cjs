@@ -121,6 +121,7 @@ test("configured candidate branch publishes the next beta against its stable bas
   assert.equal(result.next_release_version, "1.4.3-beta.2");
   assert.equal(result.next_release_tag, "v1.4.3-beta.2");
   assert.equal(result.release_required, "true");
+  assert.equal(result.plan.configuration.stable_branch, "main");
   assert.equal(result.plan.configuration.beta_branch, "beta");
   assert.equal(result.plan.history.stable_base_version, "1.4.2");
 });
@@ -164,6 +165,34 @@ test("RC candidates use their own SemVer counter", async () => {
 
   assert.equal(result.build_version, "1.4.3-rc.4");
   assert.equal(result.next_release_tag, "v1.4.3-rc.4");
+});
+
+test("published candidates remain historical after a stable release", async () => {
+  const stableAfterCandidates = "cdefabcdefabcdefabcdefabcdefabcdefabcde";
+  const result = await plan({
+    releases: [
+      { tag_name: "v1.4.3", prerelease: false, draft: false },
+      { tag_name: "v1.4.3-beta.2", prerelease: true, draft: false },
+    ],
+    tagShas: {
+      "v1.4.3": stableSha,
+      "v1.4.3-beta.2": earlierCandidateSha,
+    },
+    commits: [
+      { sha: sourceSha, commit: { message: "feat: add another capability" } },
+      { sha: stableSha, commit: { message: "feat: stable release" } },
+      { sha: earlierCandidateSha, commit: { message: "feat: beta release" } },
+      {
+        sha: stableAfterCandidates,
+        commit: { message: "feat: previous stable release" },
+      },
+    ],
+    inputs: { beta_branch: "beta" },
+  });
+
+  assert.equal(result.plan.history.stable_release_tag, "v1.4.3");
+  assert.equal(result.next_stable_version, "1.5.0");
+  assert.equal(result.next_release_tag, "v1.5.0-beta.1");
 });
 
 test("a rerun of a published candidate source keeps its version", async () => {

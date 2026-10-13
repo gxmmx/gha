@@ -158,6 +158,59 @@ test("stable push plans the strongest bump across unreleased commits", async () 
   }
 });
 
+test("PEP 440 stable release values keep a canonical SemVer tag", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
+  const outputFile = path.join(temp, "outputs");
+  writeFileSync(outputFile, "");
+  const sourceSha = "1234567890abcdef1234567890abcdef12345678";
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/repos/gxmmx/testproject") {
+      response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
+      response.end(
+        JSON.stringify([
+          { sha: sourceSha, commit: { message: "feat: add new endpoint" } },
+        ]),
+      );
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "Not Found" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await execFileAsync(process.execPath, [action], {
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_SHA: sourceSha,
+        GITHUB_REPOSITORY: "gxmmx/testproject",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
+        INPUT_GITHUB_TOKEN: "test-token",
+        INPUT_VERSION_FORMAT: "pep440",
+      },
+    });
+    const values = outputsFrom(outputFile);
+    assert.equal(values.build_version, "0.2.0");
+    assert.equal(values.next_stable_version, "0.2.0");
+    assert.equal(values.next_release_version, "0.2.0");
+    assert.equal(values.next_release_tag, "v0.2.0");
+    const plan = JSON.parse(values.release_plan);
+    assert.equal(plan.configuration.version_format, "pep440");
+    assert.equal(plan.versions.build_version, values.next_release_version);
+    assert.equal(plan.versions.next_release_tag, "v0.2.0");
+  } finally {
+    server.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test("stable planning starts after the latest reachable stable release", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
   const outputFile = path.join(temp, "outputs");
@@ -265,5 +318,161 @@ test("malformed Conventional Commit-like history fails planning", async () => {
   } finally {
     server.close();
     rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("pull request preview uses the PR head SHA and SemVer preview identifier", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
+  const outputFile = path.join(temp, "outputs");
+  const eventFile = path.join(temp, "event.json");
+  const headSha = "abcdef1234567890abcdef1234567890abcdef12";
+  writeFileSync(outputFile, "");
+  writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 42 } }));
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/repos/gxmmx/testproject") {
+      response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (request.url === "/repos/gxmmx/testproject/pulls/42") {
+      response.end(
+        JSON.stringify({ head: { sha: headSha }, base: { ref: "main" } }),
+      );
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
+      response.end(
+        JSON.stringify([
+          { sha: headSha, commit: { message: "feat: add preview support" } },
+        ]),
+      );
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "Not Found" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await execFileAsync(process.execPath, [action], {
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_SHA: "9999999999999999999999999999999999999999",
+        GITHUB_REPOSITORY: "gxmmx/testproject",
+        GITHUB_REF: "refs/pull/42/merge",
+        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_EVENT_PATH: eventFile,
+        GITHUB_RUN_ID: "1234567",
+        GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
+        INPUT_GITHUB_TOKEN: "test-token",
+      },
+    });
+    const values = outputsFrom(outputFile);
+    assert.equal(values.build_version, "0.2.0-pr.42.sha.abcdef12");
+    assert.equal(values.next_stable_version, "0.2.0");
+    assert.equal(values.next_release_version, "");
+    assert.equal(values.next_release_tag, "");
+    assert.equal(values.release_required, "false");
+    assert.equal(values.commit_sha, headSha);
+    const plan = JSON.parse(values.release_plan);
+    assert.equal(plan.source.sha, headSha);
+    assert.equal(plan.source.pull_request, 42);
+    assert.equal(plan.source.target_branch, "main");
+    assert.equal(plan.configuration.version_format, "semver");
+    assert.equal(plan.versions.build_version, values.build_version);
+    assert.equal(plan.versions.next_release_version, null);
+    assert.equal(plan.versions.next_release_tag, null);
+  } finally {
+    server.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+async function runPullRequestPreview({ versionFormat, commitMessage }) {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
+  const outputFile = path.join(temp, "outputs");
+  const eventFile = path.join(temp, "event.json");
+  const headSha = "abcdef1234567890abcdef1234567890abcdef12";
+  writeFileSync(outputFile, "");
+  writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 42 } }));
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/repos/gxmmx/testproject") {
+      response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (request.url === "/repos/gxmmx/testproject/pulls/42") {
+      response.end(
+        JSON.stringify({ head: { sha: headSha }, base: { ref: "main" } }),
+      );
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
+      response.end(
+        JSON.stringify([{ sha: headSha, commit: { message: commitMessage } }]),
+      );
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "Not Found" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await execFileAsync(process.execPath, [action], {
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_SHA: "9999999999999999999999999999999999999999",
+        GITHUB_REPOSITORY: "gxmmx/testproject",
+        GITHUB_REF: "refs/pull/42/merge",
+        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_EVENT_PATH: eventFile,
+        GITHUB_RUN_ID: "1234567",
+        GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
+        INPUT_GITHUB_TOKEN: "test-token",
+        INPUT_VERSION_FORMAT: versionFormat,
+      },
+    });
+    return outputsFrom(outputFile);
+  } finally {
+    server.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+}
+
+test("PEP 440 PR preview uses the workflow run ID and keeps release outputs empty", async () => {
+  const values = await runPullRequestPreview({
+    versionFormat: "pep440",
+    commitMessage: "feat: add preview support",
+  });
+  assert.equal(values.build_version, "0.2.0.dev1234567");
+  assert.equal(values.next_stable_version, "0.2.0");
+  assert.equal(values.next_release_version, "");
+  assert.equal(values.next_release_tag, "");
+  const plan = JSON.parse(values.release_plan);
+  assert.equal(plan.configuration.version_format, "pep440");
+  assert.equal(plan.versions.build_version, "0.2.0.dev1234567");
+  assert.equal(plan.versions.next_release_version, null);
+  assert.equal(plan.versions.next_release_tag, null);
+});
+
+test("PR previews without a prospective version use the selected profile fallback", async (t) => {
+  for (const [versionFormat, expected] of [
+    ["semver", "sha-abcdef12"],
+    ["pep440", "0.0.0.dev1234567"],
+  ]) {
+    await t.test(versionFormat, async () => {
+      const values = await runPullRequestPreview({
+        versionFormat,
+        commitMessage: "docs: clarify installation",
+      });
+      assert.equal(values.build_version, expected);
+      assert.equal(values.next_stable_version, "");
+      assert.equal(values.next_release_version, "");
+      assert.equal(values.next_release_tag, "");
+      const plan = JSON.parse(values.release_plan);
+      assert.equal(plan.configuration.version_format, versionFormat);
+      assert.equal(plan.versions.next_stable_version, null);
+      assert.equal(plan.versions.next_release_version, null);
+      assert.equal(plan.versions.next_release_tag, null);
+    });
   }
 });

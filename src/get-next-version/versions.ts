@@ -1,4 +1,5 @@
-import type { ReleaseChannel, VersionFormat } from "./channels.js";
+import type { ReleaseChannel } from "./channels.js";
+import type { VersionFormat } from "./version-profile.js";
 
 export type CandidateChannel = Exclude<ReleaseChannel, "stable" | null>;
 

@@ -62,7 +62,9 @@ Ordinary messages are neutral; malformed Conventional Commit-like messages fail
 planning. Pull request runs use the PR head SHA and base branch, return a
 provisional stable version when available, and leave `next_release_version` and
 `next_release_tag` empty. Consumers can pass `release_plan` unchanged to later
-release actions. An unmatched branch never authorizes publication.
+release actions. SemVer PR previews include the PR number and short SHA; PEP 440
+previews use the workflow run ID. An unmatched branch never authorizes
+publication.
 
 Candidate counters are independent for each channel and prospective stable
 version. Candidate Git tags always use SemVer; `version_format: pep440` renders

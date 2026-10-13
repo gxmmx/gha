@@ -9062,8 +9062,8 @@ var require_client_h1 = __commonJS({
         }
       }
     };
-    function onParserTimeout(parser2) {
-      const { socket, timeoutType, client, paused } = parser2.deref();
+    function onParserTimeout(parser3) {
+      const { socket, timeoutType, client, paused } = parser3.deref();
       if (timeoutType === TIMEOUT_HEADERS) {
         if (!socket[kWriting] || socket.writableNeedDrain || client[kRunning] > 1) {
           assert(!paused, "cannot be paused while waiting for headers");
@@ -9094,9 +9094,9 @@ var require_client_h1 = __commonJS({
       socket[kParser] = new Parser(client, socket, llhttpInstance);
       addListener(socket, "error", function(err) {
         assert(err.code !== "ERR_TLS_CERT_ALTNAME_INVALID");
-        const parser2 = this[kParser];
-        if (err.code === "ECONNRESET" && parser2.statusCode && !parser2.shouldKeepAlive) {
-          const parserErr = parser2.finish();
+        const parser3 = this[kParser];
+        if (err.code === "ECONNRESET" && parser3.statusCode && !parser3.shouldKeepAlive) {
+          const parserErr = parser3.finish();
           if (parserErr) {
             this[kError] = parserErr;
             this[kClient][kOnError](parserErr);
@@ -9107,15 +9107,15 @@ var require_client_h1 = __commonJS({
         this[kClient][kOnError](err);
       });
       addListener(socket, "readable", function() {
-        const parser2 = this[kParser];
-        if (parser2) {
-          parser2.readMore();
+        const parser3 = this[kParser];
+        if (parser3) {
+          parser3.readMore();
         }
       });
       addListener(socket, "end", function() {
-        const parser2 = this[kParser];
-        if (parser2.statusCode && !parser2.shouldKeepAlive) {
-          const parserErr = parser2.finish();
+        const parser3 = this[kParser];
+        if (parser3.statusCode && !parser3.shouldKeepAlive) {
+          const parserErr = parser3.finish();
           if (parserErr) {
             util.destroy(this, parserErr);
           }
@@ -9125,11 +9125,11 @@ var require_client_h1 = __commonJS({
       });
       addListener(socket, "close", function() {
         const client2 = this[kClient];
-        const parser2 = this[kParser];
+        const parser3 = this[kParser];
         clearIdleSocketValidation(this);
-        if (parser2) {
-          if (!this[kError] && parser2.statusCode && !parser2.shouldKeepAlive) {
-            this[kError] = parser2.finish() || this[kError];
+        if (parser3) {
+          if (!this[kError] && parser3.statusCode && !parser3.shouldKeepAlive) {
+            this[kError] = parser3.finish() || this[kError];
           }
           this[kParser].destroy();
           this[kParser] = null;
@@ -20956,14 +20956,14 @@ var require_websocket = __commonJS({
         const webSocketOptions = this[kController]?.dispatcher?.webSocketOptions;
         const maxFragments = webSocketOptions?.maxFragments;
         const maxPayloadSize = webSocketOptions?.maxPayloadSize;
-        const parser2 = new ByteParser(this, parsedExtensions, {
+        const parser3 = new ByteParser(this, parsedExtensions, {
           maxFragments,
           maxPayloadSize
         });
-        parser2.on("drain", onParserDrain);
-        parser2.on("error", onParserError.bind(this));
+        parser3.on("drain", onParserDrain);
+        parser3.on("error", onParserError.bind(this));
         response.socket.ws = this;
-        this[kByteParser] = parser2;
+        this[kByteParser] = parser3;
         this.#sendQueue = new SendQueue(response.socket);
         this[kReadyState] = states.OPEN;
         const extensions = response.headersList.get("sec-websocket-extensions");
@@ -27160,6 +27160,205 @@ var CommitParser = class {
   }
 };
 
+// src/prepare-release/attempt.ts
+var marker = "<!-- gxmmx-release-attempt:v1 -->";
+var parser = new CommitParser();
+function attemptId(tag, sha) {
+  return `${tag.replace(/[^A-Za-z0-9.-]/g, "-")}@${sha.slice(0, 12)}`;
+}
+function parseAttempt(body) {
+  if (!body) return null;
+  const start = body.indexOf(marker);
+  if (start < 0) return null;
+  const json = body.slice(start + marker.length).trim().split("\n")[0];
+  try {
+    const value = JSON.parse(json);
+    return value.schema_version === 1 && value.attempt_id ? value : null;
+  } catch {
+    return null;
+  }
+}
+function releaseNotes(messages, prBody) {
+  const groups = {
+    "Breaking changes": [],
+    Features: [],
+    Fixes: []
+  };
+  const seen = /* @__PURE__ */ new Set();
+  for (const message of messages) {
+    for (const raw of message.split(/\r?\n/)) {
+      const line = raw.trim().replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "");
+      if (!line) continue;
+      const parsed = parser.parse(line);
+      if (!parsed.type || !parsed.subject) continue;
+      const isBreaking = parsed.breaking === "!" || parsed.notes.length > 0;
+      const group = isBreaking ? "Breaking changes" : parsed.type === "feat" ? "Features" : parsed.type === "fix" ? "Fixes" : null;
+      if (!group || seen.has(line)) continue;
+      seen.add(line);
+      groups[group].push(`- ${parsed.subject}`);
+    }
+  }
+  const sections = Object.entries(groups).filter(([, lines]) => lines.length > 0).map(([heading, lines]) => `## ${heading}
+
+${lines.join("\n")}`);
+  const extra = extractReleaseNotes(prBody);
+  if (extra) sections.push(`## Additional notes
+
+${extra}`);
+  return sections.join("\n\n");
+}
+function extractReleaseNotes(body) {
+  if (!body) return "";
+  const lines = body.split(/\r?\n/);
+  const start = lines.findIndex(
+    (line) => /^##\s+Release notes\s*#*\s*$/i.test(line)
+  );
+  if (start < 0) return "";
+  const content = [];
+  for (const line of lines.slice(start + 1)) {
+    const heading = /^(#{1,6})\s+/.exec(line);
+    if (heading && heading[1].length <= 2) break;
+    content.push(line);
+  }
+  return content.join("\n").trim();
+}
+function samePlan(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+async function ensureTagClaim(args) {
+  const { octokit, owner, repo, tag, sourceSha } = args;
+  let claimedSha = null;
+  try {
+    const ref = await octokit.rest.git.getRef({
+      owner,
+      repo,
+      ref: `tags/${tag}`
+    });
+    claimedSha = ref.data.object.sha;
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+  if (claimedSha && claimedSha !== sourceSha) {
+    throw new Error(
+      `Version tag ${tag} is claimed by a different source commit`
+    );
+  }
+  if (claimedSha) return;
+  try {
+    await octokit.rest.git.createRef({
+      owner,
+      repo,
+      ref: `refs/tags/${tag}`,
+      sha: sourceSha
+    });
+  } catch (error) {
+    if (error.status !== 422) throw error;
+    const ref = await octokit.rest.git.getRef({
+      owner,
+      repo,
+      ref: `tags/${tag}`
+    });
+    if (ref.data.object.sha !== sourceSha) {
+      throw new Error(
+        `Version tag ${tag} was concurrently claimed by a different source commit`
+      );
+    }
+  }
+}
+async function establishAttempt(args) {
+  const {
+    octokit,
+    owner,
+    repo,
+    plan,
+    messages,
+    pullRequestBody,
+    targetBranch
+  } = args;
+  const tag = plan.versions.next_release_tag;
+  const version = plan.versions.next_release_version;
+  if (!tag || !version || plan.source.sha.length !== 40) {
+    throw new Error(
+      "Release plan is missing an exact source SHA, version, or tag"
+    );
+  }
+  const id = attemptId(tag, plan.source.sha);
+  const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
+    owner,
+    repo,
+    per_page: 100
+  });
+  const matching = releases.filter((release) => release.tag_name === tag);
+  const existingDrafts = matching.filter((release) => release.draft);
+  if (matching.some((release) => !release.draft)) {
+    throw new Error(`Release tag ${tag} is already published`);
+  }
+  if (existingDrafts.length > 1) {
+    throw new Error(`Multiple draft attempts already exist for ${tag}`);
+  }
+  if (existingDrafts.length === 1) {
+    const release = existingDrafts[0];
+    const record2 = parseAttempt(release.body);
+    if (!record2 || record2.source_sha !== plan.source.sha || !samePlan(
+      { ...record2.plan, attempt_id: void 0 },
+      { ...plan, attempt_id: void 0 }
+    )) {
+      throw new Error(
+        `Draft release ${tag} belongs to a different source or plan`
+      );
+    }
+    await ensureTagClaim({
+      octokit,
+      owner,
+      repo,
+      tag,
+      sourceSha: plan.source.sha
+    });
+    return {
+      plan: { ...plan, attempt_id: record2.attempt_id },
+      notes: (release.body ?? "").split(marker)[0].trim(),
+      attemptId: record2.attempt_id,
+      releaseId: release.id
+    };
+  }
+  await ensureTagClaim({
+    octokit,
+    owner,
+    repo,
+    tag,
+    sourceSha: plan.source.sha
+  });
+  const notes = releaseNotes(messages, pullRequestBody);
+  const record = {
+    schema_version: 1,
+    attempt_id: id,
+    tag,
+    version,
+    source_sha: plan.source.sha,
+    plan: { ...plan, attempt_id: id }
+  };
+  const body = `${notes}
+
+${marker}
+${JSON.stringify(record)}`;
+  const created = await octokit.rest.repos.createRelease({
+    owner,
+    repo,
+    tag_name: tag,
+    target_commitish: targetBranch,
+    name: `v${version}`,
+    body,
+    draft: true,
+    prerelease: plan.decision.channel !== "stable"
+  });
+  return {
+    plan: record.plan,
+    notes,
+    attemptId: id,
+    releaseId: created.data.id
+  };
+}
+
 // src/get-next-version/version-profile.ts
 function parseVersionFormat(input) {
   if (input === "" || input === "semver") return "semver";
@@ -27212,7 +27411,7 @@ function channelForBranch(configuration, branch) {
 }
 
 // src/prepare-release/index.ts
-var parser = new CommitParser({
+var parser2 = new CommitParser({
   headerPattern: /^([A-Za-z][A-Za-z0-9-]*)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
   headerCorrespondence: ["type", "scope", "breaking", "subject"]
 });
@@ -27224,7 +27423,7 @@ var bumpStrength = {
   major: 3
 };
 function signalForMessage(message) {
-  const wholeMessage = parser.parse(message);
+  const wholeMessage = parser2.parse(message);
   if (wholeMessage.header && conventionalLooking.test(wholeMessage.header) && (!wholeMessage.type || !wholeMessage.subject)) {
     throw new Error(
       `Malformed Conventional Commit message: ${wholeMessage.header}`
@@ -27235,7 +27434,7 @@ function signalForMessage(message) {
   let breaking = wholeMessage.notes.length > 0;
   const lines = message.split(/\r?\n/).map((line) => line.trim().replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "")).filter((line) => line.length > 0);
   for (const line of lines) {
-    const parsed = parser.parse(line);
+    const parsed = parser2.parse(line);
     const looksConventional = conventionalLooking.test(line);
     if (looksConventional && (!parsed.type || !parsed.subject)) {
       throw new Error(`Malformed Conventional Commit message: ${line}`);
@@ -27277,8 +27476,8 @@ function normalizeTitle(title, signal) {
   if (!description) {
     throw new Error("Pull request title must include a description");
   }
-  const marker = signal.breaking ? "!" : "";
-  return `${signal.titleType}${scope}${marker}: ${description}`;
+  const marker2 = signal.breaking ? "!" : "";
+  return `${signal.titleType}${scope}${marker2}: ${description}`;
 }
 function setOutputs(values) {
   core.setOutput("prepared", String(values.prepared));
@@ -27292,6 +27491,13 @@ function setOutputs(values) {
   core.setOutput("pull_request", String(values.pullRequest));
   core.setOutput("decision_sha", values.decisionSha ?? "");
   core.setOutput("decision_context", values.decisionContext ?? "");
+  core.setOutput("attempt_id", values.attemptId ?? "");
+  core.setOutput("draft_release_id", values.releaseId?.toString() ?? "");
+  core.setOutput("release_notes", values.releaseNotes ?? "");
+  core.setOutput(
+    "release_plan",
+    values.releasePlan ? JSON.stringify(values.releasePlan) : ""
+  );
 }
 function decisionContext(channel) {
   return `gha/release-decision/${channel}`;
@@ -27356,13 +27562,16 @@ async function preparePush(args) {
     }
   );
   const existing = statuses.find((status) => status.context === contextName);
+  let recorded = null;
   if (existing) {
     if (existing.state !== "success") {
       throw new Error(
         `Recorded release decision status ${contextName} is not successful`
       );
     }
-    const recorded = parseDecision(existing.description);
+    recorded = parseDecision(existing.description);
+  }
+  if (recorded && recorded.reason !== "release") {
     setOutputs({
       prepared: true,
       reason: recorded.reason,
@@ -27370,7 +27579,7 @@ async function preparePush(args) {
       titleUpdated: false,
       bump: recorded.reason === "suppressed" ? "none" : recorded.bump,
       channel,
-      releaseRequired: recorded.reason === "release",
+      releaseRequired: false,
       pullRequest: pullRequest.number,
       decisionSha: sourceSha,
       decisionContext: contextName
@@ -27387,38 +27596,116 @@ async function preparePush(args) {
       "Associated pull request no longer matches the pushed squash commit"
     );
   }
-  const commits = await octokit.paginate(octokit.rest.pulls.listCommits, {
-    owner,
-    repo,
-    pull_number: pullRequest.number,
-    per_page: 100
-  });
-  if (commits.length === 0 || commits.length >= 250) {
-    throw new Error(
-      "Pull request commit history is empty, incomplete, or truncated"
-    );
-  }
-  const messages = commits.map((commit) => {
-    if (!commit.sha || typeof commit.commit?.message !== "string") {
-      throw new Error("Pull request commit history is incomplete");
+  let reason = recorded?.reason;
+  let bump = recorded?.bump;
+  let messages = [];
+  if (!recorded) {
+    const commits = await octokit.paginate(octokit.rest.pulls.listCommits, {
+      owner,
+      repo,
+      pull_number: pullRequest.number,
+      per_page: 100
+    });
+    if (commits.length === 0 || commits.length >= 250) {
+      throw new Error(
+        "Pull request commit history is empty, incomplete, or truncated"
+      );
     }
-    return commit.commit.message;
-  });
-  const signal = strongestSignal(messages);
-  const suppressed = pull.data.labels.some(
-    (item) => item.name === args.noReleaseLabel
-  );
-  const reason = suppressed ? "suppressed" : signal.bump === "none" ? "no-changes" : "release";
-  const bump = reason === "suppressed" ? "none" : signal.bump;
-  const description = `v1;reason=${reason};bump=${bump}`;
-  await octokit.rest.repos.createCommitStatus({
-    owner,
-    repo,
-    sha: sourceSha,
-    state: "success",
-    context: contextName,
-    description
-  });
+    messages = commits.map((commit) => {
+      if (!commit.sha || typeof commit.commit?.message !== "string") {
+        throw new Error("Pull request commit history is incomplete");
+      }
+      return commit.commit.message;
+    });
+    const signal = strongestSignal(messages);
+    const suppressed = pull.data.labels.some(
+      (item) => item.name === args.noReleaseLabel
+    );
+    reason = suppressed ? "suppressed" : signal.bump === "none" ? "no-changes" : "release";
+    bump = reason === "suppressed" ? "none" : signal.bump;
+    await octokit.rest.repos.createCommitStatus({
+      owner,
+      repo,
+      sha: sourceSha,
+      state: "success",
+      context: contextName,
+      description: `v1;reason=${reason};bump=${bump}`
+    });
+  }
+  if (reason === "release") {
+    const planText = core.getInput("release_plan", { required: true });
+    let plan;
+    try {
+      plan = JSON.parse(planText);
+    } catch {
+      throw new Error("release_plan must be valid JSON from get-next-version");
+    }
+    const expected = {
+      owner,
+      name: repo,
+      event: context3.eventName,
+      run_id: context3.runId,
+      sha: sourceSha,
+      target_branch: targetBranch,
+      pull_request: null,
+      configuration: {
+        stable_branch: args.configuration.stableBranch,
+        alpha_branch: args.configuration.alphaBranch,
+        beta_branch: args.configuration.betaBranch,
+        rc_branch: args.configuration.rcBranch,
+        version_format: args.configuration.versionFormat
+      }
+    };
+    if (plan?.schema_version !== 1 || plan.repository?.owner !== expected.owner || plan.repository?.name !== expected.name || plan.source?.event !== expected.event || plan.source?.run_id !== expected.run_id || plan.source?.sha !== expected.sha || plan.source?.target_branch !== expected.target_branch || plan.source?.pull_request !== expected.pull_request || JSON.stringify(plan.configuration) !== JSON.stringify(expected.configuration) || plan.decision?.channel !== channel || plan.decision?.reason !== "release" || plan.decision?.release_required !== true || plan.decision?.bump !== bump || !plan.versions?.next_release_tag || !plan.versions?.next_release_version) {
+      throw new Error(
+        "release_plan is stale or does not match the pushed release decision; run get-next-version again"
+      );
+    }
+    const history = await octokit.paginate(octokit.rest.repos.listCommits, {
+      owner,
+      repo,
+      sha: sourceSha,
+      per_page: 100
+    });
+    if (!history.length || !history.every(
+      (entry) => entry.sha && typeof entry.commit?.message === "string"
+    )) {
+      throw new Error("Release history is incomplete");
+    }
+    const baseline = plan.history.stable_release_sha;
+    const baselineIndex = baseline ? history.findIndex((entry) => entry.sha === baseline) : -1;
+    if (baseline && baselineIndex < 0)
+      throw new Error(
+        "release_plan stable baseline is stale; run get-next-version again"
+      );
+    messages = history.slice(0, baselineIndex < 0 ? history.length : baselineIndex).map((entry) => entry.commit.message);
+    const attempt = await establishAttempt({
+      octokit,
+      owner,
+      repo,
+      plan,
+      messages,
+      pullRequestBody: pull.data.body,
+      targetBranch
+    });
+    setOutputs({
+      prepared: true,
+      reason,
+      title: "",
+      titleUpdated: false,
+      bump,
+      channel,
+      releaseRequired: true,
+      pullRequest: pullRequest.number,
+      decisionSha: sourceSha,
+      decisionContext: contextName,
+      attemptId: attempt.attemptId,
+      releaseId: attempt.releaseId,
+      releaseNotes: attempt.notes,
+      releasePlan: attempt.plan
+    });
+    return;
+  }
   setOutputs({
     prepared: true,
     reason,
@@ -27426,7 +27713,7 @@ async function preparePush(args) {
     titleUpdated: false,
     bump,
     channel,
-    releaseRequired: reason === "release",
+    releaseRequired: false,
     pullRequest: pullRequest.number,
     decisionSha: sourceSha,
     decisionContext: contextName
@@ -27456,7 +27743,8 @@ async function main() {
       repo,
       targetBranch: targetBranch2,
       channel: channel2,
-      noReleaseLabel: core.getInput("no_release_label") || "no-release"
+      noReleaseLabel: core.getInput("no_release_label") || "no-release",
+      configuration
     });
     return;
   }

@@ -48,6 +48,9 @@ async function runPreparation({
   pushedSha = "9999999999999999999999999999999999999999",
   associatedPulls = [],
   existingStatuses = [],
+  existingReleases = [],
+  claimedTagSha = null,
+  releasePlan,
 } = {}) {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-prepare-release-"));
   const outputFile = path.join(temp, "outputs");
@@ -63,6 +66,43 @@ async function runPreparation({
     ),
   );
   const requests = [];
+  const sourcePlan = releasePlan ?? {
+    schema_version: 1,
+    repository: { owner: "gxmmx", name: "testproject" },
+    source: {
+      event: "push",
+      run_id: 1234567,
+      sha: pushedSha,
+      target_branch: base,
+      pull_request: null,
+    },
+    configuration: {
+      stable_branch: configuredStableBranch,
+      alpha_branch: null,
+      beta_branch: configuredBetaBranch || null,
+      rc_branch: null,
+      version_format: "semver",
+    },
+    history: {
+      stable_base_version: "0.1.0",
+      stable_release_tag: null,
+      stable_release_sha: null,
+    },
+    decision: {
+      channel: base === "beta" ? "beta" : "stable",
+      bump: "minor",
+      reason: "release",
+      release_required: true,
+    },
+    versions: {
+      build_version: base === "beta" ? "0.2.0-beta.1" : "0.2.0",
+      next_stable_version: "0.2.0",
+      next_release_version: base === "beta" ? "0.2.0-beta.1" : "0.2.0",
+      next_release_tag: base === "beta" ? "v0.2.0-beta.1" : "v0.2.0",
+    },
+  };
+  let tagSha = claimedTagSha;
+  let createdDraft;
   const server = createServer((request, response) => {
     requests.push({ method: request.method, url: request.url });
     response.setHeader("content-type", "application/json");
@@ -71,6 +111,80 @@ async function runPreparation({
       request.url === "/repos/gxmmx/testproject"
     ) {
       response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (
+      request.method === "GET" &&
+      request.url.startsWith("/repos/gxmmx/testproject/releases")
+    ) {
+      response.end(JSON.stringify(existingReleases));
+    } else if (
+      request.method === "GET" &&
+      decodeURIComponent(request.url).startsWith(
+        "/repos/gxmmx/testproject/git/ref/tags/",
+      )
+    ) {
+      if (tagSha)
+        response.end(
+          JSON.stringify({ object: { sha: tagSha, type: "commit" } }),
+        );
+      else {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: "Not Found" }));
+      }
+    } else if (
+      request.method === "POST" &&
+      request.url === "/repos/gxmmx/testproject/git/refs"
+    ) {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        requests.at(-1).body = JSON.parse(body);
+        if (tagSha) {
+          response.statusCode = 422;
+          response.end(JSON.stringify({ message: "Reference already exists" }));
+          return;
+        }
+        tagSha = JSON.parse(body).sha;
+        response.end(
+          JSON.stringify({
+            ref: JSON.parse(body).ref,
+            object: {
+              sha: tagSha,
+              type: "commit",
+              url: "https://api.github.com/repos/gxmmx/testproject/git/commits/mock",
+            },
+          }),
+        );
+      });
+    } else if (
+      request.method === "POST" &&
+      request.url === "/repos/gxmmx/testproject/releases"
+    ) {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        createdDraft = JSON.parse(body);
+        requests.at(-1).body = createdDraft;
+        response.end(JSON.stringify({ id: 55, ...createdDraft }));
+      });
+    } else if (
+      request.method === "GET" &&
+      request.url.startsWith(`/repos/gxmmx/testproject/commits/${pushedSha}?`)
+    ) {
+      response.end(
+        JSON.stringify({
+          sha: pushedSha,
+          commit: { message: commits.join("\n\n") },
+        }),
+      );
+    } else if (
+      request.method === "GET" &&
+      request.url.startsWith(`/repos/gxmmx/testproject/commits?`)
+    ) {
+      response.end(
+        JSON.stringify([
+          { sha: pushedSha, commit: { message: commits.join("\n\n") } },
+        ]),
+      );
     } else if (
       request.method === "GET" &&
       request.url.startsWith(
@@ -161,6 +275,7 @@ async function runPreparation({
           INPUT_STABLE_BRANCH: configuredStableBranch,
           INPUT_BETA_BRANCH: configuredBetaBranch,
           INPUT_NO_RELEASE_LABEL: noReleaseLabel,
+          INPUT_RELEASE_PLAN: JSON.stringify(sourcePlan),
         },
       });
     } catch (caught) {
@@ -171,6 +286,8 @@ async function runPreparation({
       output: readFileSync(outputFile, "utf8"),
       values: readFileSync(outputFile, "utf8") ? outputsFrom(outputFile) : {},
       requests,
+      createdDraft,
+      tagSha,
     };
   } finally {
     server.close();
@@ -206,6 +323,199 @@ test("release-branch push snapshots the merged PR decision on the exact squash S
   assert.equal(status.url, `/repos/gxmmx/testproject/statuses/${sha}`);
   assert.equal(status.body.context, "gha/release-decision/stable");
   assert.equal(status.body.description, "v1;reason=release;bump=minor");
+  assert.equal(result.values.attempt_id, `v0.2.0@${sha.slice(0, 12)}`);
+  assert.equal(result.values.draft_release_id, "55");
+  assert.equal(result.tagSha, sha);
+  assert.equal(
+    result.requests.find(
+      (request) =>
+        request.method === "POST" && request.url.endsWith("/git/refs"),
+    ).body.sha,
+    sha,
+  );
+  assert.equal(result.createdDraft.tag_name, "v0.2.0");
+  assert.equal(result.createdDraft.draft, true);
+  assert.match(result.createdDraft.body, /## Features/);
+  assert.match(result.createdDraft.body, /gxmmx-release-attempt:v1/);
+});
+
+test("stale release plan fails before claiming the version tag", async () => {
+  const sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const stalePlan = {
+    schema_version: 1,
+    repository: { owner: "gxmmx", name: "testproject" },
+    source: {
+      event: "push",
+      run_id: 1234567,
+      sha: "1234567812345678123456781234567812345678",
+      target_branch: "main",
+      pull_request: null,
+    },
+    configuration: {
+      stable_branch: "main",
+      alpha_branch: null,
+      beta_branch: null,
+      rc_branch: null,
+      version_format: "semver",
+    },
+    history: {
+      stable_base_version: "0.1.0",
+      stable_release_tag: null,
+      stable_release_sha: null,
+    },
+    decision: {
+      channel: "stable",
+      bump: "minor",
+      reason: "release",
+      release_required: true,
+    },
+    versions: {
+      build_version: "0.2.0",
+      next_stable_version: "0.2.0",
+      next_release_version: "0.2.0",
+      next_release_tag: "v0.2.0",
+    },
+  };
+  const result = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/main",
+    pushedSha: sha,
+    associatedPulls: [
+      {
+        number: 42,
+        merged_at: "2026-10-13T12:00:00Z",
+        merge_commit_sha: sha,
+        base: { ref: "main" },
+      },
+    ],
+    releasePlan: stalePlan,
+  });
+  assert.match(errorText(result.error), /stale/i);
+  assert.equal(
+    result.requests.some((request) => request.url.endsWith("/git/refs")),
+    false,
+  );
+});
+
+test("a version tag claimed by another source fails closed", async () => {
+  const sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const result = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/main",
+    pushedSha: sha,
+    associatedPulls: [
+      {
+        number: 42,
+        merged_at: "2026-10-13T12:00:00Z",
+        merge_commit_sha: sha,
+        base: { ref: "main" },
+      },
+    ],
+    claimedTagSha: "1234567812345678123456781234567812345678",
+  });
+  assert.match(
+    `${errorText(result.error)} ${JSON.stringify(result.requests)}`,
+    /claimed by a different source/i,
+  );
+  assert.equal(
+    result.requests.some(
+      (request) =>
+        request.method === "POST" && request.url.endsWith("/releases"),
+    ),
+    false,
+  );
+});
+
+test("retry reuses the draft plan and snapshotted notes", async () => {
+  const sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const plan = {
+    schema_version: 1,
+    repository: { owner: "gxmmx", name: "testproject" },
+    source: {
+      event: "push",
+      run_id: 1234567,
+      sha,
+      target_branch: "main",
+      pull_request: null,
+    },
+    configuration: {
+      stable_branch: "main",
+      alpha_branch: null,
+      beta_branch: null,
+      rc_branch: null,
+      version_format: "semver",
+    },
+    history: {
+      stable_base_version: "0.1.0",
+      stable_release_tag: null,
+      stable_release_sha: null,
+    },
+    decision: {
+      channel: "stable",
+      bump: "minor",
+      reason: "release",
+      release_required: true,
+    },
+    versions: {
+      build_version: "0.2.0",
+      next_stable_version: "0.2.0",
+      next_release_version: "0.2.0",
+      next_release_tag: "v0.2.0",
+    },
+  };
+  const attempt = `v0.2.0@${sha.slice(0, 12)}`;
+  const priorNotes = "## Features\n\n- Snapshotted note from first run";
+  const record = {
+    schema_version: 1,
+    attempt_id: attempt,
+    tag: "v0.2.0",
+    version: "0.2.0",
+    source_sha: sha,
+    plan: { ...plan, attempt_id: attempt },
+  };
+  const result = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/main",
+    pushedSha: sha,
+    associatedPulls: [
+      {
+        number: 42,
+        merged_at: "2026-10-13T12:00:00Z",
+        merge_commit_sha: sha,
+        base: { ref: "main" },
+      },
+    ],
+    existingStatuses: [
+      {
+        context: "gha/release-decision/stable",
+        state: "success",
+        description: "v1;reason=release;bump=minor",
+      },
+    ],
+    existingReleases: [
+      {
+        id: 66,
+        tag_name: "v0.2.0",
+        draft: true,
+        body: `${priorNotes}\n\n<!-- gxmmx-release-attempt:v1 -->\n${JSON.stringify(record)}`,
+      },
+    ],
+    claimedTagSha: sha,
+    releasePlan: plan,
+    commits: ["feat(api): changed after the attempt was created"],
+  });
+  assert.ifError(result.error);
+  assert.equal(result.values.attempt_id, attempt);
+  assert.equal(result.values.draft_release_id, "66");
+  assert.equal(result.values.release_notes, priorNotes);
+  assert.equal(
+    result.requests.some((request) => request.url.endsWith("/releases")),
+    false,
+  );
+  assert.equal(
+    result.requests.some((request) => request.url.endsWith("/git/refs")),
+    false,
+  );
 });
 
 test("suppression on a release push is recorded and cannot change on retry", async () => {
@@ -309,7 +619,12 @@ test("candidate decisions use a channel-specific status context", async () => {
       },
     ],
   });
-  assert.ifError(result.error);
+  assert.ifError(
+    result.error &&
+      new Error(
+        `${errorText(result.error)} ${JSON.stringify(result.requests)}`,
+      ),
+  );
   assert.equal(result.values.channel, "beta");
   assert.equal(result.values.decision_context, "gha/release-decision/beta");
   assert.equal(

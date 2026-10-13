@@ -91,6 +91,8 @@ test("stable push plans the strongest bump across unreleased commits", async () 
       response.end(JSON.stringify({ default_branch: "main" }));
     } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
       response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
+      response.end("[]");
     } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
       response.end(
         JSON.stringify([
@@ -158,6 +160,58 @@ test("stable push plans the strongest bump across unreleased commits", async () 
   }
 });
 
+test("stable planner advances past a version tag claimed by another source", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
+  const outputFile = path.join(temp, "outputs");
+  writeFileSync(outputFile, "");
+  const sourceSha = "1234567890abcdef1234567890abcdef12345678";
+  const occupiedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/repos/gxmmx/testproject") {
+      response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
+      response.end(
+        JSON.stringify([{ name: "v0.2.0", commit: { sha: occupiedSha } }]),
+      );
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
+      response.end(
+        JSON.stringify([
+          { sha: sourceSha, commit: { message: "feat: add feature" } },
+        ]),
+      );
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "Not Found" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await execFileAsync(process.execPath, [action], {
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_SHA: sourceSha,
+        GITHUB_REPOSITORY: "gxmmx/testproject",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
+        INPUT_GITHUB_TOKEN: "test-token",
+      },
+    });
+    const values = outputsFrom(outputFile);
+    assert.equal(values.next_stable_version, "0.2.1");
+    assert.equal(values.next_release_version, "0.2.1");
+    assert.equal(values.next_release_tag, "v0.2.1");
+  } finally {
+    server.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test("PEP 440 stable release values keep a canonical SemVer tag", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
   const outputFile = path.join(temp, "outputs");
@@ -168,6 +222,8 @@ test("PEP 440 stable release values keep a canonical SemVer tag", async () => {
     if (request.url === "/repos/gxmmx/testproject") {
       response.end(JSON.stringify({ default_branch: "main" }));
     } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
       response.end("[]");
     } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
       response.end(
@@ -229,6 +285,8 @@ test("stable planning starts after the latest reachable stable release", async (
       );
     } else if (request.url === "/repos/gxmmx/testproject/commits/v1.4.2") {
       response.end(JSON.stringify({ sha: baselineSha }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
+      response.end("[]");
     } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
       response.end(
         JSON.stringify([
@@ -278,6 +336,8 @@ test("malformed Conventional Commit-like history fails planning", async () => {
     if (request.url === "/repos/gxmmx/testproject") {
       response.end(JSON.stringify({ default_branch: "main" }));
     } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
       response.end("[]");
     } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
       response.end(
@@ -337,6 +397,8 @@ test("pull request preview uses the PR head SHA and SemVer preview identifier", 
         JSON.stringify({ head: { sha: headSha }, base: { ref: "main" } }),
       );
     } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
       response.end("[]");
     } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
       response.end(
@@ -403,6 +465,8 @@ async function runPullRequestPreview({ versionFormat, commitMessage }) {
         JSON.stringify({ head: { sha: headSha }, base: { ref: "main" } }),
       );
     } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
       response.end("[]");
     } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
       response.end(

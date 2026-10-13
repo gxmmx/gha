@@ -27301,6 +27301,11 @@ async function stageReleaseAssets(args) {
   if (!record || record.attempt_id !== attemptId || record.tag !== release.data.tag_name) {
     throw new Error("Draft release does not match the supplied attempt ID");
   }
+  if (record.abandoned) {
+    throw new Error(
+      `Release attempt was abandoned: ${record.abandoned.reason}`
+    );
+  }
   if (record.asset_manifest && !sameManifest(record.asset_manifest, desired)) {
     throw new Error(
       "Retry supplies different asset bytes for this release attempt"

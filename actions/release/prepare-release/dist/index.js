@@ -27306,6 +27306,11 @@ async function establishAttempt(args) {
   if (existingDrafts.length === 1) {
     const release = existingDrafts[0];
     const record2 = parseAttempt(release.body);
+    if (record2?.abandoned) {
+      throw new Error(
+        `Release attempt ${record2.attempt_id} was abandoned: ${record2.abandoned.reason}`
+      );
+    }
     if (!record2 || record2.source_sha !== plan.source.sha || !samePlan(
       { ...record2.plan, attempt_id: void 0 },
       { ...plan, attempt_id: void 0 }

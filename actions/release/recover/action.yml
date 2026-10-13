@@ -1,0 +1,43 @@
+name: Recover release attempt
+description: Resume or explicitly abandon a durable release attempt.
+inputs:
+  github_token:
+    description: Token used to inspect and, for abandonment, update the draft release.
+    required: true
+  operation:
+    description: Recovery operation, either resume or abandon.
+    required: true
+  attempt_id:
+    description: Existing durable attempt ID recorded on a GitHub release.
+    required: true
+  reason:
+    description: Required explanation when abandoning an attempt.
+    required: false
+outputs:
+  attempt_id:
+    description: Durable attempt identity.
+  release_id:
+    description: GitHub release ID retaining the attempt.
+  tag:
+    description: Claimed immutable version tag.
+  version:
+    description: Resolved build and release version from the attempt.
+  source_sha:
+    description: Exact source commit recorded by the attempt.
+  release_plan:
+    description: Recorded plan, including its original version profile and configuration.
+  release_notes:
+    description: Snapshotted notes stored on the release.
+  asset_manifest:
+    description: JSON manifest of staged asset names, sizes, and checksums.
+  registry_receipt:
+    description: Recorded external publication receipt for consumer reconciliation.
+  release_assets:
+    description: JSON list of retained GitHub release assets and download URLs.
+  attempt_state:
+    description: Current state, draft, abandoned, or published.
+  abandoned_reason:
+    description: Recorded abandonment reason, or empty when active.
+runs:
+  using: node24
+  main: dist/index.js

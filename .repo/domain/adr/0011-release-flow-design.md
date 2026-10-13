@@ -224,8 +224,20 @@ Status persistence after originating run deletion requires verification.
 ## Attempts and assets
 
 A draft records the exact source SHA, version, plan, release notes, and attempt
-progress. Draft uniqueness, reservation behavior, and tag timing are not established
-and must be tested before depending on them.
+progress. Draft bodies may retain the existing HTML-comment attempt record so
+pre-publication retries can resume it. Before promotion, publication saves the
+complete attempt record as the `gxmmx-release-attempt.json` release asset and
+verifies that it matches the draft record. A missing or mismatched asset stops
+publication. The published release body contains reader-facing release notes and
+artifact references only; it does not contain the internal attempt marker or
+serialized attempt JSON.
+
+Published-attempt lookup, same-source retries, release-history checks, and major
+alias repair read the verified attempt asset. Existing published releases that
+keep the attempt record in the body remain readable for compatibility. If both
+the asset and body contain records, conflicting attempt data fails closed. Draft
+uniqueness, reservation behavior, and tag timing are not established and must be
+tested before depending on them.
 
 Assets are project-specific and optional. Proposed input: newline-separated paths
 or patterns relative to the checkout. Every supplied path must exist and every

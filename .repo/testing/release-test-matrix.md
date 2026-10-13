@@ -1,6 +1,6 @@
 # Release flow test matrix
 
-Status: proposed acceptance matrix; no experiments or tests have run.
+Status: proposed acceptance matrix; testproject acceptance has not run.
 Use sibling `testproject` for integration experiments and `semreleasetest` as
 reference only. Separate read-only planning tests from publication tests.
 
@@ -79,6 +79,14 @@ return to the design discussion before selecting another coordination mechanism.
 | Case                                                       | Expected behavior                                                                          |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | Asset-free release                                         | Valid successful publication                                                               |
+| Draft retry before publication                             | Reuse the body-embedded attempt record and keep the same version and source SHA            |
+| Attempt asset saved before promotion                       | Save and verify complete `gxmmx-release-attempt.json` before publishing                    |
+| Attempt asset upload fails                                 | Stop before promotion; leave the release as a draft                                        |
+| Attempt asset differs from the draft record                | Stop before promotion; do not publish conflicting attempt data                             |
+| Published release description                              | Contains reader-facing notes and artifact references only; no attempt marker or JSON       |
+| Same-source retry after publication                        | Read the attempt asset; do not publish again; allow idempotent alias repair                |
+| Conflicting published attempt identity                     | Fail closed on a conflicting tag, version, source SHA, or attempt record                   |
+| Existing published release with body-embedded attempt data | Continue reading the legacy body record for retry, history, and alias repair               |
 | Missing path/empty required pattern                        | Fail before final publication and before external publication                              |
 | Existing asset with same checksum                          | Reuse staged bytes                                                                         |
 | Existing asset with different checksum                     | Fail; do not replace claimed content                                                       |

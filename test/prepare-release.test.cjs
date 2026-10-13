@@ -466,13 +466,17 @@ test("stable preparation blocks a predecessor release attempt until it is publis
 });
 
 test("stable preparation proceeds when earlier release decisions are resolved", async () => {
-  const fixture = predecessorFixture([
-    {
-      context: "gha/release-decision/stable",
-      state: "success",
-      description: "v1;reason=no-changes;bump=none",
-    },
-  ]);
+  const fixture = predecessorFixture(
+    [
+      {
+        context: "gha/release-decision/stable",
+        state: "success",
+        description: "v1;reason=no-changes;bump=none",
+      },
+    ],
+    [],
+  );
+  fixture.options.commits = ["fix: current patch"];
   const result = await runPreparation(fixture.options);
   assert.equal(result.error, undefined);
   assert.equal(result.createdDraft?.tag_name, "v0.2.0");

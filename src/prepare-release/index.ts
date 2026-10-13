@@ -527,7 +527,7 @@ async function preparePush(args: {
       plan.decision?.channel !== channel ||
       plan.decision?.reason !== "release" ||
       plan.decision?.release_required !== true ||
-      plan.decision?.bump !== bump ||
+      bumpStrength[plan.decision?.bump] < bumpStrength[bump!] ||
       !plan.versions?.next_release_tag ||
       !plan.versions?.next_release_version
     ) {

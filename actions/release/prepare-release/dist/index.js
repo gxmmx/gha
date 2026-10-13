@@ -27787,7 +27787,7 @@ async function preparePush(args) {
         version_format: args.configuration.versionFormat
       }
     };
-    if (plan?.schema_version !== 1 || plan.repository?.owner !== expected.owner || plan.repository?.name !== expected.name || plan.source?.event !== expected.event || plan.source?.run_id !== expected.run_id || plan.source?.sha !== expected.sha || plan.source?.target_branch !== expected.target_branch || plan.source?.pull_request !== expected.pull_request || JSON.stringify(plan.configuration) !== JSON.stringify(expected.configuration) || plan.decision?.channel !== channel || plan.decision?.reason !== "release" || plan.decision?.release_required !== true || plan.decision?.bump !== bump || !plan.versions?.next_release_tag || !plan.versions?.next_release_version) {
+    if (plan?.schema_version !== 1 || plan.repository?.owner !== expected.owner || plan.repository?.name !== expected.name || plan.source?.event !== expected.event || plan.source?.run_id !== expected.run_id || plan.source?.sha !== expected.sha || plan.source?.target_branch !== expected.target_branch || plan.source?.pull_request !== expected.pull_request || JSON.stringify(plan.configuration) !== JSON.stringify(expected.configuration) || plan.decision?.channel !== channel || plan.decision?.reason !== "release" || plan.decision?.release_required !== true || bumpStrength[plan.decision?.bump] < bumpStrength[bump] || !plan.versions?.next_release_tag || !plan.versions?.next_release_version) {
       throw new Error(
         "release_plan is stale or does not match the pushed release decision; run get-next-version again"
       );

@@ -15,3 +15,6 @@ testproject branch, so both branches must be available on GitHub.
 See [Get next version](actions/get-next-version/README.md) for the current
 consumer action contract. See [Stage release assets](actions/release/stage-assets/README.md)
 for validating and attaching immutable files to a draft attempt.
+
+See [Minimal release workflow](.github/workflows/release.md) for a callable,
+asset-free GitHub release workflow for simple consumers.

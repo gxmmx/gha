@@ -7,6 +7,18 @@ inputs:
   stable_branch:
     description: Stable release branch. Defaults to the repository default branch.
     required: false
+  alpha_branch:
+    description: Branch that publishes alpha candidates. Empty disables the channel.
+    required: false
+  beta_branch:
+    description: Branch that publishes beta candidates. Empty disables the channel.
+    required: false
+  rc_branch:
+    description: Branch that publishes release candidates. Empty disables the channel.
+    required: false
+  version_format:
+    description: Build and release version profile (semver or pep440).
+    required: false
 outputs:
   build_version:
     description: Version identifier for this build.

@@ -221,6 +221,33 @@ async function assertStablePredecessorsResolved(args: {
     baselineIndex < 0 ? undefined : baselineIndex,
   );
   if (predecessorHistory.length === 0) return;
+  if (baselineIndex < 0) {
+    const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
+      owner,
+      repo,
+      per_page: 100,
+    });
+    for (const release of releases) {
+      if (!release.draft) continue;
+      const attempt = parseAttempt(release.body);
+      if (
+        attempt &&
+        attempt.source_sha !== currentSha &&
+        attempt.plan.decision?.channel === "stable" &&
+        !attempt.abandoned &&
+        history.some((entry) => entry.sha === attempt.source_sha)
+      ) {
+        throw new Error(
+          `Unresolved predecessor commit ${attempt.source_sha}: its stable release attempt is not published or abandoned; recover it before continuing`,
+        );
+      }
+    }
+    // Before the first stable release, the release range still includes all
+    // historical commits. Decision snapshots are therefore a checkpoint for
+    // later ranges; older historical status contexts cannot identify where the
+    // new release automation began.
+    return;
+  }
   const contextName = decisionContext("stable");
   const statusSets = await Promise.all(
     predecessorHistory.map(async (entry) => {
@@ -232,15 +259,7 @@ async function assertStablePredecessorsResolved(args: {
     }),
   );
 
-  let trackedLength = predecessorHistory.length;
-  if (baselineIndex < 0) {
-    let oldestTracked = -1;
-    for (let index = 0; index < statusSets.length; index += 1) {
-      if (statusSets[index]) oldestTracked = index;
-    }
-    if (oldestTracked < 0) return;
-    trackedLength = oldestTracked;
-  }
+  const trackedLength = predecessorHistory.length;
   const releases = (await octokit.paginate(octokit.rest.repos.listReleases, {
     owner,
     repo,

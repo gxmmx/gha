@@ -27521,6 +27521,14 @@ function parseDecision(description) {
     bump: match[2]
   };
 }
+function compareStableVersions(left, right) {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+}
 async function assertStablePredecessorsResolved(args) {
   const { octokit, owner, repo, history, baselineSha, currentSha } = args;
   const currentIndex = history.findIndex((entry) => entry.sha === currentSha);
@@ -27538,6 +27546,23 @@ async function assertStablePredecessorsResolved(args) {
     baselineIndex < 0 ? void 0 : baselineIndex
   );
   if (predecessorHistory.length === 0) return;
+  if (baselineIndex < 0) {
+    const releases2 = await octokit.paginate(octokit.rest.repos.listReleases, {
+      owner,
+      repo,
+      per_page: 100
+    });
+    for (const release of releases2) {
+      if (!release.draft) continue;
+      const attempt = parseAttempt(release.body);
+      if (attempt && attempt.source_sha !== currentSha && attempt.plan.decision?.channel === "stable" && !attempt.abandoned && history.some((entry) => entry.sha === attempt.source_sha)) {
+        throw new Error(
+          `Unresolved predecessor commit ${attempt.source_sha}: its stable release attempt is not published or abandoned; recover it before continuing`
+        );
+      }
+    }
+    return;
+  }
   const contextName = decisionContext("stable");
   const statusSets = await Promise.all(
     predecessorHistory.map(async (entry) => {
@@ -27548,15 +27573,7 @@ async function assertStablePredecessorsResolved(args) {
       return statuses.find((status) => status.context === contextName);
     })
   );
-  let trackedLength = predecessorHistory.length;
-  if (baselineIndex < 0) {
-    let oldestTracked = -1;
-    for (let index = 0; index < statusSets.length; index += 1) {
-      if (statusSets[index]) oldestTracked = index;
-    }
-    if (oldestTracked < 0) return;
-    trackedLength = oldestTracked;
-  }
+  const trackedLength = predecessorHistory.length;
   const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
     owner,
     repo,
@@ -27575,11 +27592,7 @@ async function assertStablePredecessorsResolved(args) {
     if (!stableVersion) continue;
     const major = Number(stableVersion[1]);
     const previous = latestStableByMajor.get(major);
-    const versionParts = attempt.version.split(".").map(Number);
-    const previousParts = previous?.version.split(".").map(Number) ?? [];
-    const newer = !previous || versionParts.some(
-      (value, index) => value !== previousParts[index] && versionParts.slice(0, index).every((part, partIndex) => part === previousParts[partIndex]) && value > previousParts[index]
-    );
+    const newer = !previous || compareStableVersions(attempt.version, previous.version) > 0;
     if (newer) {
       latestStableByMajor.set(major, {
         version: attempt.version,

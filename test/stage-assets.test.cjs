@@ -53,6 +53,7 @@ async function stage({ assets, files, release, storedAssets = [] }) {
     release: { ...release },
     assets: [...storedAssets],
     uploads: [],
+    patches: [],
   };
   const server = createServer((request, response) => {
     response.setHeader("content-type", "application/json");
@@ -69,7 +70,9 @@ async function stage({ assets, files, release, storedAssets = [] }) {
       let body = "";
       request.on("data", (chunk) => (body += chunk));
       request.on("end", () => {
-        Object.assign(state.release, JSON.parse(body));
+        const update = JSON.parse(body);
+        state.patches.push(update);
+        Object.assign(state.release, update);
         response.end(JSON.stringify(state.release));
       });
     } else if (
@@ -159,6 +162,8 @@ test("stages assets and a SHA-256 checksum file on the matching draft", async ()
       .bytes.toString();
     assert.match(checksum, /^[a-f0-9]{64}  app\.tar\.gz\n$/);
     assert.match(result.state.release.body, /"sha256":"[a-f0-9]{64}"/);
+    assert.equal(result.state.patches[0].tag_name, draft.tag_name);
+    assert.equal(result.state.patches[0].draft, true);
   } finally {
     result.cleanup();
   }

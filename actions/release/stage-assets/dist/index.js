@@ -27190,6 +27190,9 @@ ${JSON.stringify(record)}`;
 
 // src/stage-release-assets/index.ts
 var checksumName = "SHA256SUMS";
+function uploadBaseUrl(apiUrl) {
+  return apiUrl === "https://api.github.com" ? void 0 : apiUrl;
+}
 function sha256(bytes) {
   return (0, import_node_crypto.createHash)("sha256").update(bytes).digest("hex");
 }
@@ -27278,7 +27281,7 @@ async function putAsset(args) {
     name,
     // Octokit's generated endpoint type says string, but upload payloads are raw bytes.
     data: bytes,
-    baseUrl: baseUrl2,
+    ...baseUrl2 ? { baseUrl: baseUrl2 } : {},
     headers: { "content-type": "application/octet-stream" }
   });
 }
@@ -27330,6 +27333,8 @@ async function stageReleaseAssets(args) {
       owner,
       repo,
       release_id: releaseId,
+      tag_name: record.tag,
+      draft: true,
       body: serializeAttemptBody(release.data.body, updated)
     });
   }
@@ -27342,7 +27347,7 @@ async function stageReleaseAssets(args) {
       releaseId,
       name: asset.name,
       bytes: asset.bytes,
-      baseUrl: context2.apiUrl
+      baseUrl: uploadBaseUrl(context2.apiUrl)
     });
     expected.delete(asset.name);
   }
@@ -27358,7 +27363,7 @@ async function stageReleaseAssets(args) {
       releaseId,
       name: checksumName,
       bytes: checksumBytes,
-      baseUrl: context2.apiUrl
+      baseUrl: uploadBaseUrl(context2.apiUrl)
     });
     expected.delete(checksumName);
   }

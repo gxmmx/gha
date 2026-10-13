@@ -13,6 +13,10 @@ import {
 
 const checksumName = "SHA256SUMS";
 
+function uploadBaseUrl(apiUrl: string): string | undefined {
+  return apiUrl === "https://api.github.com" ? undefined : apiUrl;
+}
+
 interface LocalAsset extends StagedAsset {
   bytes: Buffer;
 }
@@ -121,7 +125,7 @@ async function putAsset(args: {
   releaseId: number;
   name: string;
   bytes: Buffer;
-  baseUrl: string;
+  baseUrl?: string;
 }): Promise<void> {
   const { octokit, owner, repo, releaseId, name, bytes, baseUrl } = args;
   await octokit.rest.repos.uploadReleaseAsset({
@@ -131,7 +135,7 @@ async function putAsset(args: {
     name,
     // Octokit's generated endpoint type says string, but upload payloads are raw bytes.
     data: bytes as unknown as string,
-    baseUrl,
+    ...(baseUrl ? { baseUrl } : {}),
     headers: { "content-type": "application/octet-stream" },
   });
 }
@@ -197,6 +201,8 @@ async function stageReleaseAssets(args: {
       owner,
       repo,
       release_id: releaseId,
+      tag_name: record.tag,
+      draft: true,
       body: serializeAttemptBody(release.data.body, updated),
     });
   }
@@ -210,7 +216,7 @@ async function stageReleaseAssets(args: {
       releaseId,
       name: asset.name,
       bytes: asset.bytes,
-      baseUrl: github.context.apiUrl,
+      baseUrl: uploadBaseUrl(github.context.apiUrl),
     });
     expected.delete(asset.name);
   }
@@ -225,7 +231,7 @@ async function stageReleaseAssets(args: {
       releaseId,
       name: checksumName,
       bytes: checksumBytes,
-      baseUrl: github.context.apiUrl,
+      baseUrl: uploadBaseUrl(github.context.apiUrl),
     });
     expected.delete(checksumName);
   }

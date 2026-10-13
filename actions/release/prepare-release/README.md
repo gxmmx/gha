@@ -28,6 +28,14 @@ squash summaries are removed. The associated merged PR's optional `## Release
 notes` section is appended. Extraction stops at the next level-one or level-two
 heading. Once the attempt exists, later PR edits do not change its notes.
 
+For stable pushes, preparation also checks every tracked predecessor commit
+since the stable baseline. Each must have a successful stable decision snapshot;
+release decisions must have a published or explicitly abandoned attempt. A
+missing snapshot or unresolved attempt stops preparation before it creates a
+draft, so later runs cannot silently skip work after cancellation or queue
+overflow. Rerun the predecessor workflow to finish it, or abandon its existing
+attempt with a reason through `release/recover`.
+
 ```yaml
 permissions:
   contents: write

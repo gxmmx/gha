@@ -68,6 +68,7 @@ export interface AttemptRecord {
   plan: ReleasePlan;
   asset_manifest?: AssetManifest;
   registry_receipt?: RegistryReceipt;
+  major_alias_enabled?: boolean;
   abandoned?: { reason: string; at: string };
 }
 

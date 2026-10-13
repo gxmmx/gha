@@ -1,6 +1,6 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { establishAttempt, type ReleasePlan } from "./attempt.js";
+import { establishAttempt, parseAttempt, type ReleasePlan } from "./attempt.js";
 import { CommitParser } from "conventional-commits-parser";
 import {
   channelForBranch,
@@ -183,6 +183,164 @@ function parseDecision(description: string | null): {
     reason: match[1] as "release" | "no-changes" | "suppressed",
     bump: match[2] as Bump,
   };
+}
+
+function compareStableVersions(left: string, right: string): number {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+}
+
+async function assertStablePredecessorsResolved(args: {
+  octokit: ReturnType<typeof github.getOctokit>;
+  owner: string;
+  repo: string;
+  history: Array<{ sha: string; commit: { message: string } }>;
+  baselineSha: string | null;
+  currentSha: string;
+}): Promise<void> {
+  const { octokit, owner, repo, history, baselineSha, currentSha } = args;
+  const currentIndex = history.findIndex((entry) => entry.sha === currentSha);
+  if (currentIndex !== 0) {
+    throw new Error(
+      "Release history does not start at the exact pushed commit",
+    );
+  }
+  const baselineIndex = baselineSha
+    ? history.findIndex((entry) => entry.sha === baselineSha)
+    : -1;
+  if (baselineSha && baselineIndex < 0) {
+    throw new Error("Stable release baseline is missing from release history");
+  }
+
+  const predecessorHistory = history.slice(
+    1,
+    baselineIndex < 0 ? undefined : baselineIndex,
+  );
+  if (predecessorHistory.length === 0) return;
+  if (baselineIndex < 0) {
+    const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
+      owner,
+      repo,
+      per_page: 100,
+    });
+    for (const release of releases) {
+      if (!release.draft) continue;
+      const attempt = parseAttempt(release.body);
+      if (
+        attempt &&
+        attempt.source_sha !== currentSha &&
+        attempt.plan.decision?.channel === "stable" &&
+        !attempt.abandoned &&
+        history.some((entry) => entry.sha === attempt.source_sha)
+      ) {
+        throw new Error(
+          `Unresolved predecessor commit ${attempt.source_sha}: its stable release attempt is not published or abandoned; recover it before continuing`,
+        );
+      }
+    }
+    // Before the first stable release, the release range still includes all
+    // historical commits. Decision snapshots are therefore a checkpoint for
+    // later ranges; older historical status contexts cannot identify where the
+    // new release automation began.
+    return;
+  }
+  const contextName = decisionContext("stable");
+  const statusSets = await Promise.all(
+    predecessorHistory.map(async (entry) => {
+      const statuses = (await octokit.paginate(
+        octokit.rest.repos.listCommitStatusesForRef,
+        { owner, repo, ref: entry.sha, per_page: 100 },
+      )) as CommitStatus[];
+      return statuses.find((status) => status.context === contextName);
+    }),
+  );
+
+  const trackedLength = predecessorHistory.length;
+  const releases = (await octokit.paginate(octokit.rest.repos.listReleases, {
+    owner,
+    repo,
+    per_page: 100,
+  })) as Array<{
+    id: number;
+    draft: boolean;
+    prerelease: boolean;
+    body?: string | null;
+  }>;
+  const attempts = releases.flatMap((release) => {
+    const attempt = parseAttempt(release.body);
+    return attempt ? [{ release, attempt }] : [];
+  });
+
+  const latestStableByMajor = new Map<
+    number,
+    { version: string; sourceSha: string; aliasEnabled: boolean }
+  >();
+  for (const { release, attempt } of attempts) {
+    if (release.draft || release.prerelease) continue;
+    const stableVersion = /^(0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.exec(
+      attempt.version,
+    );
+    if (!stableVersion) continue;
+    const major = Number(stableVersion[1]);
+    const previous = latestStableByMajor.get(major);
+    const newer =
+      !previous || compareStableVersions(attempt.version, previous.version) > 0;
+    if (newer) {
+      latestStableByMajor.set(major, {
+        version: attempt.version,
+        sourceSha: attempt.source_sha,
+        aliasEnabled: attempt.major_alias_enabled === true,
+      });
+    }
+  }
+  for (const [major, latest] of latestStableByMajor) {
+    if (!latest.aliasEnabled) continue;
+    let aliasSha: string | null = null;
+    try {
+      const alias = await octokit.rest.git.getRef({
+        owner,
+        repo,
+        ref: `tags/v${major}`,
+      });
+      aliasSha = alias.data.object.sha;
+    } catch (error) {
+      if ((error as { status?: number }).status !== 404) throw error;
+    }
+    if (aliasSha !== latest.sourceSha) {
+      throw new Error(
+        `Stable major alias v${major} is unresolved for release ${latest.version}; repair it or explicitly disable alias updates before building another stable release`,
+      );
+    }
+  }
+
+  for (let index = 0; index < trackedLength; index += 1) {
+    const entry = predecessorHistory[index];
+    const status = statusSets[index];
+    if (!status || status.state !== "success") {
+      throw new Error(
+        `Unresolved predecessor commit ${entry.sha}: stable release decision is missing; rerun its release workflow before continuing`,
+      );
+    }
+    const decision = parseDecision(status.description);
+    if (decision.reason !== "release") continue;
+    const matching = attempts.filter(
+      ({ attempt }) => attempt.source_sha === entry.sha,
+    );
+    const resolved = matching.some(
+      ({ release, attempt }) =>
+        attempt.abandoned !== undefined ||
+        (!release.draft && !release.prerelease),
+    );
+    if (!resolved) {
+      throw new Error(
+        `Unresolved predecessor commit ${entry.sha}: its stable release attempt is not published or abandoned; recover it before continuing`,
+      );
+    }
+  }
 }
 
 async function preparePush(args: {
@@ -369,7 +527,7 @@ async function preparePush(args: {
       plan.decision?.channel !== channel ||
       plan.decision?.reason !== "release" ||
       plan.decision?.release_required !== true ||
-      plan.decision?.bump !== bump ||
+      bumpStrength[plan.decision?.bump] < bumpStrength[bump!] ||
       !plan.versions?.next_release_tag ||
       !plan.versions?.next_release_version
     ) {
@@ -402,6 +560,16 @@ async function preparePush(args: {
     messages = history
       .slice(0, baselineIndex < 0 ? history.length : baselineIndex)
       .map((entry) => entry.commit.message);
+    if (channel === "stable") {
+      await assertStablePredecessorsResolved({
+        octokit,
+        owner,
+        repo,
+        history,
+        baselineSha: baseline,
+        currentSha: sourceSha,
+      });
+    }
     const attempt = await establishAttempt({
       octokit,
       owner,

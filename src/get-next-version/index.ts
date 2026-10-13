@@ -540,7 +540,13 @@ async function main(): Promise<void> {
   }
 
   let nextStableVersion =
-    bump === "none" ? null : nextVersion(stableBase, bump);
+    bump === "none"
+      ? null
+      : baseline
+        ? nextVersion(stableBase, bump)
+        : channel === "stable"
+          ? "0.1.0"
+          : nextVersion(stableBase, bump);
   let releaseRequired = !preview && bump !== "none";
   let reason: Reason = preview
     ? "preview"

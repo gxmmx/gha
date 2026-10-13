@@ -3,7 +3,9 @@
 This bundled, read-only action resolves the stable branch, reads the exact source
 commit history, and returns a stable or candidate version prediction with a
 serialized release plan. It inspects all commits after the latest stable release.
-Before the first stable release, the base version is `0.1.0`.
+When no stable release exists, the first release-worthy history plans `0.1.0`
+regardless of whether its strongest signal is a fix, feature, or breaking change.
+After a stable release exists, normal bump rules apply from that published version.
 
 ## Usage
 

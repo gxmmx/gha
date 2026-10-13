@@ -27264,7 +27264,7 @@ function formatStableVersion(version, _format) {
 
 // src/get-next-version/index.ts
 var parser = new CommitParser({
-  headerPattern: /^(\w+)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
+  headerPattern: /^([A-Za-z][A-Za-z0-9-]*)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
   headerCorrespondence: ["type", "scope", "breaking", "subject"]
 });
 var malformedConventionalHeader = /^[A-Za-z][A-Za-z0-9-]*(?:\(|!?:)/;

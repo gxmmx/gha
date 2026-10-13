@@ -52,28 +52,28 @@ publish.
 
 ## Inputs
 
-| Input | Type | Default | Description |
-| --- | --- | --- | --- |
-| `stable_branch` | string | repository default branch | Stable release target; empty selects the default branch |
-| `alpha_branch` | string | empty | Alpha release branch; empty disables the channel |
-| `beta_branch` | string | empty | Beta release branch; empty disables the channel |
-| `rc_branch` | string | empty | RC release branch; empty disables the channel |
-| `version_format` | string | `semver` | Build version profile (`semver` or `pep440`) |
-| `require_release` | boolean | `true` | Require release-worthy changes on stable-target PRs |
-| `no_release_label` | string | `no-release` | Label that suppresses publication for a merged PR |
-| `update_major_tag` | boolean | `true` | Update the stable `v<major>` alias after publication |
+| Input              | Type    | Default                   | Description                                             |
+| ------------------ | ------- | ------------------------- | ------------------------------------------------------- |
+| `stable_branch`    | string  | repository default branch | Stable release target; empty selects the default branch |
+| `alpha_branch`     | string  | empty                     | Alpha release branch; empty disables the channel        |
+| `beta_branch`      | string  | empty                     | Beta release branch; empty disables the channel         |
+| `rc_branch`        | string  | empty                     | RC release branch; empty disables the channel           |
+| `version_format`   | string  | `semver`                  | Build version profile (`semver` or `pep440`)            |
+| `require_release`  | boolean | `true`                    | Require release-worthy changes on stable-target PRs     |
+| `no_release_label` | string  | `no-release`              | Label that suppresses publication for a merged PR       |
+| `update_major_tag` | boolean | `true`                    | Update the stable `v<major>` alias after publication    |
 
 ## Outputs
 
-| Output | Description |
-| --- | --- |
-| `build_version` | Planned build version for this event |
-| `release_required` | Whether the saved PR or commit decision permits a release |
-| `reason` | `release`, `suppressed`, `no-changes`, or `unmatched-branch` |
-| `attempt_id` | Durable release attempt identity, empty when no attempt exists |
-| `version` | Published version, empty when no release was published |
-| `tag` | Published full version tag, empty when no release was published |
-| `release_id` | Published GitHub release ID, empty when no release was published |
+| Output             | Description                                                      |
+| ------------------ | ---------------------------------------------------------------- |
+| `build_version`    | Planned push build version; empty on PR events                   |
+| `release_required` | Whether the saved PR or commit decision permits a release        |
+| `reason`           | `release`, `suppressed`, `no-changes`, or `unmatched-branch`     |
+| `attempt_id`       | Durable release attempt identity, empty when no attempt exists   |
+| `version`          | Published version, empty when no release was published           |
+| `tag`              | Published full version tag, empty when no release was published  |
+| `release_id`       | Published GitHub release ID, empty when no release was published |
 
 ## Permissions and serialization
 

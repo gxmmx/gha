@@ -7,22 +7,22 @@ on:
         description: Stable release branch; empty uses the repository default branch
         type: string
         required: false
-        default: ''
+        default: ""
       alpha_branch:
         description: Alpha release branch; empty disables the channel
         type: string
         required: false
-        default: ''
+        default: ""
       beta_branch:
         description: Beta release branch; empty disables the channel
         type: string
         required: false
-        default: ''
+        default: ""
       rc_branch:
         description: RC release branch; empty disables the channel
         type: string
         required: false
-        default: ''
+        default: ""
       version_format:
         description: Build version profile
         type: string
@@ -91,6 +91,7 @@ jobs:
       release_id: ${{ steps.publish.outputs.release_id }}
     steps:
       - id: plan
+        if: github.event_name == 'push'
         uses: $/actions/get-next-version
         with:
           github_token: ${{ github.token }}

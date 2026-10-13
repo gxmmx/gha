@@ -78,7 +78,7 @@ interface CommitEntry {
 }
 
 const parser = new CommitParser({
-  headerPattern: /^(\w+)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
+  headerPattern: /^([A-Za-z][A-Za-z0-9-]*)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
   headerCorrespondence: ["type", "scope", "breaking", "subject"],
 });
 const malformedConventionalHeader = /^[A-Za-z][A-Za-z0-9-]*(?:\(|!?:)/;

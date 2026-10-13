@@ -381,6 +381,61 @@ test("malformed Conventional Commit-like history fails planning", async () => {
   }
 });
 
+test("Git co-author trailers do not invalidate a Conventional Commit", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
+  const outputFile = path.join(temp, "outputs");
+  writeFileSync(outputFile, "");
+  const sourceSha = "1234567890abcdef1234567890abcdef12345678";
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/repos/gxmmx/testproject") {
+      response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits")) {
+      response.end(
+        JSON.stringify([
+          {
+            sha: sourceSha,
+            commit: {
+              message:
+                "feat: add reusable workflow\n\nCo-authored-by: OpenAI Codex <codex@openai.com>",
+            },
+          },
+        ]),
+      );
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "Not Found" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await execFileAsync(process.execPath, [action], {
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_SHA: sourceSha,
+        GITHUB_REPOSITORY: "gxmmx/testproject",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
+        INPUT_GITHUB_TOKEN: "test-token",
+      },
+    });
+    const values = outputsFrom(outputFile);
+    assert.equal(values.bump, "minor");
+    assert.equal(values.next_stable_version, "0.2.0");
+    assert.equal(values.release_required, "true");
+  } finally {
+    server.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test("pull request preview uses the PR head SHA and SemVer preview identifier", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
   const outputFile = path.join(temp, "outputs");

@@ -27516,6 +27516,7 @@ async function recordedPlanForSource(args) {
     rc_branch: args.configuration.rcBranch,
     version_format: args.configuration.versionFormat
   };
+  let recordedPlan = null;
   for (const release of args.releases) {
     const record = await readAttemptRecord({
       octokit: args.octokit,
@@ -27524,13 +27525,21 @@ async function recordedPlanForSource(args) {
       release
     });
     if (!record) continue;
+    if (record.source_sha !== args.sourceSha) continue;
     const plan = record.plan;
-    if (record.source_sha !== args.sourceSha || record.tag !== release.tag_name || plan?.schema_version !== 1 || plan.repository?.owner !== context2.repo.owner || plan.repository?.name !== context2.repo.repo || plan.source?.event !== "push" || plan.source?.sha !== args.sourceSha || plan.source?.target_branch !== args.targetBranch || plan.source?.pull_request !== null || JSON.stringify(plan.configuration) !== JSON.stringify(configuration) || plan.decision?.channel !== args.channel || plan.decision?.reason !== "release" || plan.decision?.release_required !== true || !plan.versions?.next_release_tag || plan.versions.next_release_tag !== record.tag || !plan.versions?.next_release_version) {
-      continue;
+    if (record.tag !== release.tag_name || record.version !== plan?.versions?.next_release_version || record.attempt_id !== `${record.tag.replace(/[^A-Za-z0-9.-]/g, "-")}@${args.sourceSha.slice(0, 12)}` || plan?.schema_version !== 1 || plan.repository?.owner !== context2.repo.owner || plan.repository?.name !== context2.repo.repo || plan.source?.event !== "push" || plan.source?.sha !== args.sourceSha || plan.source?.target_branch !== args.targetBranch || plan.source?.pull_request !== null || JSON.stringify(plan.configuration) !== JSON.stringify(configuration) || plan.decision?.channel !== args.channel || plan.decision?.reason !== "release" || plan.decision?.release_required !== true || !plan.versions?.next_release_tag || plan.versions.next_release_tag !== record.tag || !plan.versions?.next_release_version) {
+      throw new Error(
+        `Release attempt for source SHA ${args.sourceSha} has conflicting attempt metadata`
+      );
     }
-    return plan;
+    if (recordedPlan && JSON.stringify(recordedPlan) !== JSON.stringify(plan)) {
+      throw new Error(
+        `Multiple conflicting release attempts exist for source SHA ${args.sourceSha}`
+      );
+    }
+    recordedPlan = plan;
   }
-  return null;
+  return recordedPlan;
 }
 async function main() {
   const context3 = context2;

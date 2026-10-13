@@ -309,6 +309,7 @@ async function recordedPlanForSource(args: {
     version_format: args.configuration.versionFormat,
   };
 
+  let recordedPlan: ReleasePlan | null = null;
   for (const release of args.releases) {
     const record = await readAttemptRecord({
       octokit: args.octokit,
@@ -317,10 +318,13 @@ async function recordedPlanForSource(args: {
       release,
     });
     if (!record) continue;
+    if (record.source_sha !== args.sourceSha) continue;
     const plan = record.plan;
     if (
-      record.source_sha !== args.sourceSha ||
       record.tag !== release.tag_name ||
+      record.version !== plan?.versions?.next_release_version ||
+      record.attempt_id !==
+        `${record.tag.replace(/[^A-Za-z0-9.-]/g, "-")}@${args.sourceSha.slice(0, 12)}` ||
       plan?.schema_version !== 1 ||
       plan.repository?.owner !== github.context.repo.owner ||
       plan.repository?.name !== github.context.repo.repo ||
@@ -336,11 +340,18 @@ async function recordedPlanForSource(args: {
       plan.versions.next_release_tag !== record.tag ||
       !plan.versions?.next_release_version
     ) {
-      continue;
+      throw new Error(
+        `Release attempt for source SHA ${args.sourceSha} has conflicting attempt metadata`,
+      );
     }
-    return plan;
+    if (recordedPlan && JSON.stringify(recordedPlan) !== JSON.stringify(plan)) {
+      throw new Error(
+        `Multiple conflicting release attempts exist for source SHA ${args.sourceSha}`,
+      );
+    }
+    recordedPlan = plan;
   }
-  return null;
+  return recordedPlan;
 }
 
 async function main(): Promise<void> {

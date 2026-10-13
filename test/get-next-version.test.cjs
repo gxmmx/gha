@@ -38,6 +38,7 @@ async function runPushPlan({
   noReleaseLabel = "no-release",
   messages = ["feat: add reusable release workflow"],
   previousStableVersion = null,
+  releaseFixtures,
 } = {}) {
   const previousSha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
   const commits = [
@@ -57,19 +58,38 @@ async function runPushPlan({
     response.setHeader("content-type", "application/json");
     if (request.url === "/repos/gxmmx/testproject") {
       response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (
+      request.url.startsWith("/repos/gxmmx/testproject/releases/assets/")
+    ) {
+      const assetId = Number(request.url.split("/").at(-1));
+      const assetBytes = releaseFixtures?.find(
+        (release) =>
+          release.assets?.some((asset) => asset.id === assetId) &&
+          release.attemptAssetContents,
+      )?.attemptAssetContents;
+      if (!assetBytes) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: "Not Found" }));
+      } else {
+        response.setHeader("content-type", "application/octet-stream");
+        response.end(assetBytes);
+      }
     } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
       response.end(
         JSON.stringify(
-          previousStableVersion
-            ? [
-                {
-                  tag_name: `v${previousStableVersion}`,
-                  draft: false,
-                  prerelease: false,
-                  body: "",
-                },
-              ]
-            : [],
+          releaseFixtures?.map(
+            ({ attemptAssetContents: _bytes, ...release }) => release,
+          ) ??
+            (previousStableVersion
+              ? [
+                  {
+                    tag_name: `v${previousStableVersion}`,
+                    draft: false,
+                    prerelease: false,
+                    body: "",
+                  },
+                ]
+              : []),
         ),
       );
     } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
@@ -90,6 +110,8 @@ async function runPushPlan({
       `/repos/gxmmx/testproject/commits/v${previousStableVersion}`
     ) {
       response.end(JSON.stringify({ sha: previousSha }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits/v")) {
+      response.end(JSON.stringify({ sha: sourceSha }));
     } else if (
       request.url.startsWith(
         `/repos/gxmmx/testproject/commits/${sourceSha}/statuses`,
@@ -142,6 +164,76 @@ async function runPushPlan({
     server.close();
     rmSync(temp, { recursive: true, force: true });
   }
+}
+
+function stableAttemptFixture(sourceSha, overrides = {}) {
+  const plan = {
+    schema_version: 1,
+    repository: { owner: "gxmmx", name: "testproject" },
+    source: {
+      event: "push",
+      run_id: 1234,
+      sha: sourceSha,
+      target_branch: "main",
+      pull_request: null,
+    },
+    configuration: {
+      stable_branch: "main",
+      alpha_branch: null,
+      beta_branch: null,
+      rc_branch: null,
+      version_format: "semver",
+    },
+    history: {
+      stable_base_version: "0.1.0",
+      stable_release_tag: "v0.1.0",
+      stable_release_sha: "a".repeat(40),
+    },
+    decision: {
+      channel: "stable",
+      bump: "minor",
+      reason: "release",
+      release_required: true,
+    },
+    versions: {
+      build_version: "0.2.0",
+      next_stable_version: "0.2.0",
+      next_release_version: "0.2.0",
+      next_release_tag: "v0.2.0",
+    },
+    ...overrides.plan,
+  };
+  const record = {
+    schema_version: 1,
+    attempt_id: "v0.2.0@1234567890ab",
+    tag: "v0.2.0",
+    version: "0.2.0",
+    source_sha: sourceSha,
+    plan: { ...plan, attempt_id: "v0.2.0@1234567890ab" },
+    ...overrides.record,
+  };
+  return {
+    id: 42,
+    tag_name: overrides.releaseTag ?? record.tag,
+    draft: false,
+    prerelease: overrides.prerelease ?? false,
+    body: overrides.assetBacked
+      ? "## Features\n\n- add endpoint"
+      : `## Features\n\n- add endpoint\n\n<!-- gxmmx-release-attempt:v1 -->\n${JSON.stringify(record)}`,
+    ...(overrides.assetBacked
+      ? {
+          assets: [
+            {
+              id: overrides.assetId ?? 42,
+              name: "gxmmx-release-attempt.json",
+            },
+          ],
+          attemptAssetContents: Buffer.from(
+            `${JSON.stringify(record, null, 2)}\n`,
+          ),
+        }
+      : {}),
+  };
 }
 
 test("merged PR suppression clears release outputs and keeps the selected build profile", async () => {
@@ -458,6 +550,59 @@ test("stable planner reuses the recorded plan for a published source SHA retry",
     server.close();
     rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test("stable planner fails closed on same-source published attempt conflicts", async () => {
+  const sourceSha = "1234567890abcdef1234567890abcdef12345678";
+  const conflictingAttempts = [
+    stableAttemptFixture(sourceSha, {
+      releaseTag: "v0.3.0",
+      assetBacked: true,
+    }),
+    stableAttemptFixture(sourceSha, {
+      record: { version: "0.3.0" },
+      assetBacked: true,
+    }),
+    stableAttemptFixture(sourceSha, {
+      record: { plan: { schema_version: 1 } },
+      assetBacked: true,
+    }),
+    [
+      stableAttemptFixture(sourceSha, { assetBacked: true }),
+      stableAttemptFixture(sourceSha, {
+        releaseTag: "v0.3.0",
+        assetBacked: true,
+        assetId: 43,
+      }),
+    ],
+  ];
+
+  for (const releases of conflictingAttempts) {
+    await assert.rejects(
+      runPushPlan({
+        sourceSha,
+        releaseFixtures: Array.isArray(releases) ? releases : [releases],
+      }),
+      (error) =>
+        /conflicting (?:attempt metadata|release attempts)/.test(error.stdout),
+    );
+  }
+});
+
+test("stable planner ignores published attempt records for other source commits", async () => {
+  const sourceSha = "1234567890abcdef1234567890abcdef12345678";
+  const unrelated = stableAttemptFixture(
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    { prerelease: true, assetBacked: true },
+  );
+  const values = await runPushPlan({
+    sourceSha,
+    releaseFixtures: [unrelated],
+  });
+
+  assert.equal(values.release_required, "true");
+  assert.equal(values.next_release_version, "0.1.0");
+  assert.equal(values.next_release_tag, "v0.1.0");
 });
 
 test("stable planner advances past a version tag claimed by another source", async () => {

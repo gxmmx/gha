@@ -1,6 +1,6 @@
 # gha
 
-Reusable GitHub Actions and workflows for release automation.
+Reusable GitHub Actions and workflows, organized by purpose.
 
 ## Components
 

@@ -27315,7 +27315,7 @@ async function publishRelease(args) {
       "Full-version tag does not point to the exact source commit"
     );
   }
-  if (release.prerelease !== (plan.decision.channel !== "stable") || release.name && release.name !== record.version) {
+  if (release.prerelease !== (plan.decision.channel !== "stable") || release.name && release.name !== record.version && release.name !== record.tag) {
     throw new Error("Draft release metadata does not match the prepared plan");
   }
   const persistedReceipt = record.registry_receipt;

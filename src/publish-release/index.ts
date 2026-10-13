@@ -224,7 +224,9 @@ async function publishRelease(args: {
   }
   if (
     release.prerelease !== (plan.decision.channel !== "stable") ||
-    (release.name && release.name !== record.version)
+    (release.name &&
+      release.name !== record.version &&
+      release.name !== record.tag)
   ) {
     throw new Error("Draft release metadata does not match the prepared plan");
   }

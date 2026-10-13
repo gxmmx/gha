@@ -107,7 +107,7 @@ async function publish({
       prerelease: true,
       tag_name: plan.versions.next_release_tag,
       target_commitish: plan.source.target_branch,
-      name: plan.versions.next_release_version,
+      name: plan.versions.next_release_tag,
       body: `## Features\n\n- add acceptance fixture\n\n${marker}\n${JSON.stringify(attempt)}`,
       ...releaseOverrides,
     },

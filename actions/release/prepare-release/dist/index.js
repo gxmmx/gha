@@ -27296,9 +27296,35 @@ async function establishAttempt(args) {
     per_page: 100
   });
   const matching = releases.filter((release) => release.tag_name === tag);
+  const published = matching.filter((release) => !release.draft);
   const existingDrafts = matching.filter((release) => release.draft);
-  if (matching.some((release) => !release.draft)) {
-    throw new Error(`Release tag ${tag} is already published`);
+  if (published.length > 1) {
+    throw new Error(`Multiple published attempts already exist for ${tag}`);
+  }
+  if (published.length === 1) {
+    const release = published[0];
+    const record2 = parseAttempt(release.body);
+    if (!record2 || record2.attempt_id !== id || record2.source_sha !== plan.source.sha || record2.version !== version || !samePlan(
+      { ...record2.plan, attempt_id: void 0 },
+      { ...plan, attempt_id: void 0 }
+    )) {
+      throw new Error(
+        `Published release ${tag} belongs to a different source or plan`
+      );
+    }
+    await ensureTagClaim({
+      octokit,
+      owner,
+      repo,
+      tag,
+      sourceSha: plan.source.sha
+    });
+    return {
+      plan: { ...plan, attempt_id: record2.attempt_id },
+      notes: (release.body ?? "").split(attemptMarker)[0].trim(),
+      attemptId: record2.attempt_id,
+      releaseId: release.id
+    };
   }
   if (existingDrafts.length > 1) {
     throw new Error(`Multiple draft attempts already exist for ${tag}`);
@@ -27787,7 +27813,7 @@ async function preparePush(args) {
         version_format: args.configuration.versionFormat
       }
     };
-    if (plan?.schema_version !== 1 || plan.repository?.owner !== expected.owner || plan.repository?.name !== expected.name || plan.source?.event !== expected.event || plan.source?.run_id !== expected.run_id || plan.source?.sha !== expected.sha || plan.source?.target_branch !== expected.target_branch || plan.source?.pull_request !== expected.pull_request || JSON.stringify(plan.configuration) !== JSON.stringify(expected.configuration) || plan.decision?.channel !== channel || plan.decision?.reason !== "release" || plan.decision?.release_required !== true || bumpStrength[plan.decision?.bump] < bumpStrength[bump] || !plan.versions?.next_release_tag || !plan.versions?.next_release_version) {
+    if (plan?.schema_version !== 1 || plan.repository?.owner !== expected.owner || plan.repository?.name !== expected.name || plan.source?.event !== expected.event || plan.source?.sha !== expected.sha || plan.source?.target_branch !== expected.target_branch || plan.source?.pull_request !== expected.pull_request || JSON.stringify(plan.configuration) !== JSON.stringify(expected.configuration) || plan.decision?.channel !== channel || plan.decision?.reason !== "release" || plan.decision?.release_required !== true || bumpStrength[plan.decision?.bump] < bumpStrength[bump] || !plan.versions?.next_release_tag || !plan.versions?.next_release_version) {
       throw new Error(
         "release_plan is stale or does not match the pushed release decision; run get-next-version again"
       );
@@ -27872,7 +27898,7 @@ async function main() {
     alphaBranchInput: core.getInput("alpha_branch"),
     betaBranchInput: core.getInput("beta_branch"),
     rcBranchInput: core.getInput("rc_branch"),
-    versionFormatInput: "semver"
+    versionFormatInput: core.getInput("version_format")
   });
   if (context3.eventName === "push") {
     const targetBranch2 = context3.ref.replace(/^refs\/heads\//, "");

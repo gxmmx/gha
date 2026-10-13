@@ -16,6 +16,10 @@ inputs:
   rc_branch:
     description: Configured RC release branch; empty disables the channel.
     required: false
+  version_format:
+    description: Version profile used to validate the release plan; semver or pep440.
+    required: false
+    default: semver
   require_release:
     description: Require a release-worthy change for stable-target PRs. Defaults to true.
     required: false

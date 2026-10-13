@@ -518,7 +518,6 @@ async function preparePush(args: {
       plan.repository?.owner !== expected.owner ||
       plan.repository?.name !== expected.name ||
       plan.source?.event !== expected.event ||
-      plan.source?.run_id !== expected.run_id ||
       plan.source?.sha !== expected.sha ||
       plan.source?.target_branch !== expected.target_branch ||
       plan.source?.pull_request !== expected.pull_request ||
@@ -623,7 +622,7 @@ async function main(): Promise<void> {
     alphaBranchInput: core.getInput("alpha_branch"),
     betaBranchInput: core.getInput("beta_branch"),
     rcBranchInput: core.getInput("rc_branch"),
-    versionFormatInput: "semver",
+    versionFormatInput: core.getInput("version_format"),
   });
   if (context.eventName === "push") {
     const targetBranch = context.ref.replace(/^refs\/heads\//, "");

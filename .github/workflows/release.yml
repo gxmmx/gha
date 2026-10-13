@@ -1,0 +1,125 @@
+name: Minimal release
+
+on:
+  workflow_call:
+    inputs:
+      stable_branch:
+        description: Stable release branch; empty uses the repository default branch
+        type: string
+        required: false
+        default: ""
+      alpha_branch:
+        description: Alpha release branch; empty disables the channel
+        type: string
+        required: false
+        default: ""
+      beta_branch:
+        description: Beta release branch; empty disables the channel
+        type: string
+        required: false
+        default: ""
+      rc_branch:
+        description: RC release branch; empty disables the channel
+        type: string
+        required: false
+        default: ""
+      version_format:
+        description: Build version profile
+        type: string
+        required: false
+        default: semver
+      require_release:
+        description: Require a release-worthy change on stable-target PRs
+        type: boolean
+        required: false
+        default: true
+      no_release_label:
+        description: PR label that suppresses publication after merge
+        type: string
+        required: false
+        default: no-release
+      update_major_tag:
+        description: Move the stable major-only tag after publication
+        type: boolean
+        required: false
+        default: true
+    outputs:
+      build_version:
+        description: Planned build version for this event
+        value: ${{ jobs.release.outputs.build_version }}
+      release_required:
+        description: Whether this commit or PR has an unsuppressed release decision
+        value: ${{ jobs.release.outputs.release_required }}
+      reason:
+        description: Release decision reason
+        value: ${{ jobs.release.outputs.reason }}
+      attempt_id:
+        description: Durable release attempt identity, empty when no attempt exists
+        value: ${{ jobs.release.outputs.attempt_id }}
+      version:
+        description: Published release version, empty when no release was published
+        value: ${{ jobs.release.outputs.version }}
+      tag:
+        description: Published full version tag, empty when no release was published
+        value: ${{ jobs.release.outputs.tag }}
+      release_id:
+        description: Published GitHub release ID, empty when no release was published
+        value: ${{ jobs.release.outputs.release_id }}
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+# Keep preparation through publication in one non-canceling queue. Other
+# release workflows in the same repository must use this group too.
+concurrency:
+  group: release-${{ github.repository }}
+  queue: max
+
+jobs:
+  release:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      build_version: ${{ steps.plan.outputs.build_version }}
+      release_required: ${{ steps.prepare.outputs.release_required }}
+      reason: ${{ steps.prepare.outputs.reason }}
+      attempt_id: ${{ steps.prepare.outputs.attempt_id }}
+      version: ${{ steps.publish.outputs.version }}
+      tag: ${{ steps.publish.outputs.tag }}
+      release_id: ${{ steps.publish.outputs.release_id }}
+    steps:
+      - id: plan
+        if: github.event_name == 'push'
+        uses: $/actions/get-next-version
+        with:
+          github_token: ${{ github.token }}
+          stable_branch: ${{ inputs.stable_branch }}
+          alpha_branch: ${{ inputs.alpha_branch }}
+          beta_branch: ${{ inputs.beta_branch }}
+          rc_branch: ${{ inputs.rc_branch }}
+          version_format: ${{ inputs.version_format }}
+
+      - id: prepare
+        uses: $/actions/release/prepare-release
+        with:
+          github_token: ${{ github.token }}
+          stable_branch: ${{ inputs.stable_branch }}
+          alpha_branch: ${{ inputs.alpha_branch }}
+          beta_branch: ${{ inputs.beta_branch }}
+          rc_branch: ${{ inputs.rc_branch }}
+          version_format: ${{ inputs.version_format }}
+          require_release: ${{ inputs.require_release }}
+          no_release_label: ${{ inputs.no_release_label }}
+          release_plan: ${{ steps.plan.outputs.release_plan }}
+
+      - id: publish
+        if: github.event_name == 'push' && steps.prepare.outputs.release_required == 'true'
+        uses: $/actions/release/publish
+        with:
+          github_token: ${{ github.token }}
+          draft_release_id: ${{ steps.prepare.outputs.draft_release_id }}
+          attempt_id: ${{ steps.prepare.outputs.attempt_id }}
+          release_plan: ${{ steps.prepare.outputs.release_plan }}
+          update_major_alias: ${{ inputs.update_major_tag }}

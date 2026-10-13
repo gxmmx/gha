@@ -1,8 +1,21 @@
 # Release flow test matrix
 
-Status: proposed acceptance matrix; testproject acceptance has not run.
-Use sibling `testproject` for integration experiments and `semreleasetest` as
-reference only. Separate read-only planning tests from publication tests.
+Status: unit tests and testproject acceptance ran on 2026-10-13. The acceptance
+branch and workflow runs below exercise the initial stable release, subsequent
+bump, published retries, legacy attempt records, and draft retries. Use sibling
+`testproject` for integration experiments and `semreleasetest` as reference only.
+Separate read-only planning tests from publication tests.
+
+## Spec 19 acceptance evidence
+
+| Scenario | Observed behavior | Evidence |
+| --- | --- | --- |
+| First stable release from feature history with no applicable stable baseline | Published `v0.1.0`; exact merged SHA `3042939d4f92bb68d0a9a2b8517252ab71a563ee`; reader-facing body; verified attempt asset | testproject [PR #30](https://github.com/gxmmx/testproject/pull/30), [run 38441839703](https://github.com/gxmmx/testproject/actions/runs/38441839703) |
+| Normal bump after published `v0.1.0` | Published `v0.1.1` from a fix; exact merged SHA `fb5ef72f83dd7c8b76406558d5e5a9b45a566a55`; clean body and verified asset | testproject [PR #31](https://github.com/gxmmx/testproject/pull/31), [run 38442280791](https://github.com/gxmmx/testproject/actions/runs/38442280791) |
+| Retry after successful publication | Rerun attempt 2 succeeded; release list still contains one `v0.1.0`; asset-backed metadata matched the attempt | [run 38441839703](https://github.com/gxmmx/testproject/actions/runs/38441839703) |
+| Draft preparation retry | Two prepares and a workflow rerun reused attempt `v0.4.0-beta.1@2c2f62102c27` and release ID `411959637`; release remained a draft with its body record | testproject [PR #32](https://github.com/gxmmx/testproject/pull/32), [run 38442917609](https://github.com/gxmmx/testproject/actions/runs/38442917609) |
+| Legacy body-embedded record | Planner successfully used the `issue14-stable-target` history containing published `v0.3.0` with a body record and no attempt asset; the candidate draft was created from that baseline | [run 38442917609](https://github.com/gxmmx/testproject/actions/runs/38442917609), legacy [v0.3.0 release](https://github.com/gxmmx/testproject/releases/tag/v0.3.0) |
+| Conflicting published identity and unrelated records | Same-source tag/version/plan/duplicate-record conflicts fail closed; unrelated source records are skipped | `test/get-next-version.test.cjs`; `npm test` passed 78 tests |
 
 ## GitHub feasibility experiments first
 

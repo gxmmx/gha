@@ -1,7 +1,8 @@
 # Compose conventional-commit release channels and publication attempts
 
-Status: accepted design direction. Policies below are agreed; concrete interfaces
-and GitHub behavior experiments remain. No actions or workflows are implemented.
+Status: accepted. The release actions and reusable workflow implement the policies
+below; testproject evidence and outstanding acceptance cases are recorded in the
+release test matrix.
 
 This record consolidates the design decisions detailed in ADR-0001 through
 ADR-0010 and ADR-0012, keeping project-owned builds separate from shared release operations.

@@ -16,6 +16,9 @@ inputs:
   registry_receipt:
     description: Optional JSON receipt for consumer-published artifacts and immutable digests.
     required: false
+  update_major_alias:
+    description: Move the stable v<major> tag after publication; ignored for prerelease channels.
+    required: false
 outputs:
   published:
     description: Whether the matching release is published.

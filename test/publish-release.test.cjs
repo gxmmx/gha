@@ -47,6 +47,42 @@ const plan = {
   attempt_id: `v0.2.0-rc.1@${sourceSha.slice(0, 12)}`,
 };
 
+function stablePlan(version = "0.2.0") {
+  const tag = `v${version}`;
+  return {
+    ...plan,
+    source: { ...plan.source, target_branch: "main" },
+    configuration: { ...plan.configuration, rc_branch: null },
+    decision: { ...plan.decision, channel: "stable" },
+    versions: {
+      build_version: version,
+      next_stable_version: version,
+      next_release_version: version,
+      next_release_tag: tag,
+    },
+    attempt_id: `${tag}@${sourceSha.slice(0, 12)}`,
+  };
+}
+
+function releaseRecord(releasePlan, { aliasEnabled = true } = {}) {
+  return {
+    id: 77,
+    tag_name: releasePlan.versions.next_release_tag,
+    name: releasePlan.versions.next_release_tag,
+    draft: false,
+    prerelease: false,
+    body: `<!-- gxmmx-release-attempt:v1 -->\n${JSON.stringify({
+      schema_version: 1,
+      attempt_id: releasePlan.attempt_id,
+      tag: releasePlan.versions.next_release_tag,
+      version: releasePlan.versions.next_release_version,
+      source_sha: releasePlan.source.sha,
+      plan: releasePlan,
+      major_alias_enabled: aliasEnabled,
+    })}`,
+  };
+}
+
 function outputsFrom(outputFile) {
   const values = {};
   const lines = readFileSync(outputFile, "utf8").trimEnd().split("\n");
@@ -75,24 +111,29 @@ function errorText(error) {
 
 async function publish({
   releasePlan = plan,
+  recordPlan = plan,
   receipt = "",
   releaseOverrides = {},
   tagSha = sourceSha,
   existingAssets = [],
+  updateMajorAlias = "",
+  existingReleases = [],
+  existingRefs = {},
 } = {}) {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-publish-release-"));
   const outputFile = path.join(temp, "outputs");
   const eventFile = path.join(temp, "event.json");
   writeFileSync(outputFile, "");
   writeFileSync(eventFile, JSON.stringify({}));
-  const planWithAttempt = { ...plan, ...releasePlan };
+  const activePlan = { ...plan, ...releasePlan };
+  const planWithAttempt = activePlan;
   const attempt = {
     schema_version: 1,
-    attempt_id: plan.attempt_id,
-    tag: plan.versions.next_release_tag,
-    version: plan.versions.next_release_version,
-    source_sha: plan.source.sha,
-    plan: { ...plan, attempt_id: plan.attempt_id },
+    attempt_id: recordPlan.attempt_id,
+    tag: recordPlan.versions.next_release_tag,
+    version: recordPlan.versions.next_release_version,
+    source_sha: recordPlan.source.sha,
+    plan: { ...recordPlan, attempt_id: recordPlan.attempt_id },
     asset_manifest: {
       schema_version: 1,
       assets: [],
@@ -104,23 +145,31 @@ async function publish({
     release: {
       id: 55,
       draft: true,
-      prerelease: true,
-      tag_name: plan.versions.next_release_tag,
-      target_commitish: plan.source.target_branch,
-      name: plan.versions.next_release_tag,
+      prerelease: activePlan.decision.channel !== "stable",
+      tag_name: recordPlan.versions.next_release_tag,
+      target_commitish: activePlan.source.target_branch,
+      name: recordPlan.versions.next_release_tag,
       body: `## Features\n\n- add acceptance fixture\n\n${marker}\n${JSON.stringify(attempt)}`,
       ...releaseOverrides,
     },
     assets: [...existingAssets],
+    refs: { ...existingRefs },
+    releases: [],
     operations: [],
     requests: [],
   };
+  state.releases = [...existingReleases, state.release];
   const server = createServer((request, response) => {
     const url = new URL(request.url, "http://localhost");
     const decodedPath = decodeURIComponent(url.pathname);
     state.requests.push({ method: request.method, path: decodedPath });
     response.setHeader("content-type", "application/json");
     if (
+      request.method === "GET" &&
+      url.pathname === "/repos/gxmmx/testproject/releases"
+    ) {
+      response.end(JSON.stringify(state.releases));
+    } else if (
       request.method === "GET" &&
       url.pathname === "/repos/gxmmx/testproject/releases/55"
     ) {
@@ -156,10 +205,68 @@ async function publish({
       });
     } else if (
       request.method === "GET" &&
-      decodedPath ===
-        `/repos/gxmmx/testproject/git/ref/tags/${plan.versions.next_release_tag}`
+      decodedPath.startsWith("/repos/gxmmx/testproject/git/ref/tags/")
     ) {
-      response.end(JSON.stringify({ object: { sha: tagSha, type: "commit" } }));
+      const name = decodedPath.split("/git/ref/")[1];
+      const sha =
+        name === `tags/${recordPlan.versions.next_release_tag}`
+          ? tagSha
+          : state.refs[name];
+      if (sha)
+        response.end(JSON.stringify({ object: { sha, type: "commit" } }));
+      else {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ message: "Not Found" }));
+      }
+    } else if (
+      request.method === "POST" &&
+      url.pathname === "/repos/gxmmx/testproject/git/refs"
+    ) {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        const ref = JSON.parse(body);
+        const name = ref.ref.replace(/^refs\//, "");
+        if (state.refs[name]) {
+          response.statusCode = 422;
+          response.end(JSON.stringify({ message: "Reference already exists" }));
+          return;
+        }
+        state.refs[name] = ref.sha;
+        state.operations.push({
+          operation: "create-ref",
+          ref: name,
+          sha: ref.sha,
+        });
+        response.end(
+          JSON.stringify({
+            ref: ref.ref,
+            object: { sha: ref.sha, type: "commit" },
+          }),
+        );
+      });
+    } else if (
+      request.method === "PATCH" &&
+      decodedPath.startsWith("/repos/gxmmx/testproject/git/refs/")
+    ) {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        const update = JSON.parse(body);
+        const name = decodedPath.split("/git/refs/")[1];
+        state.refs[name] = update.sha;
+        state.operations.push({
+          operation: "update-ref",
+          ref: name,
+          sha: update.sha,
+        });
+        response.end(
+          JSON.stringify({
+            ref: `refs/${name}`,
+            object: { sha: update.sha, type: "commit" },
+          }),
+        );
+      });
     } else if (
       request.method === "PATCH" &&
       url.pathname === "/repos/gxmmx/testproject/releases/55"
@@ -195,9 +302,10 @@ async function publish({
           GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
           INPUT_GITHUB_TOKEN: "test-token",
           INPUT_DRAFT_RELEASE_ID: "55",
-          INPUT_ATTEMPT_ID: plan.attempt_id,
+          INPUT_ATTEMPT_ID: recordPlan.attempt_id,
           INPUT_RELEASE_PLAN: JSON.stringify(planWithAttempt),
           INPUT_REGISTRY_RECEIPT: receipt,
+          INPUT_UPDATE_MAJOR_ALIAS: updateMajorAlias,
         },
       });
       return {
@@ -374,5 +482,151 @@ test("rejects assets that are not claimed by the prepared attempt", async () => 
     assert.deepEqual(error.publishState.operations, []);
   } finally {
     error?.cleanup?.();
+  }
+});
+
+test("publishes a stable release then creates its major alias by default", async () => {
+  const stable = stablePlan();
+  const result = await publish({ releasePlan: stable, recordPlan: stable });
+  try {
+    assert.equal(result.outputs.published, "true");
+    assert.equal(result.state.refs["tags/v0"], sourceSha);
+    assert.equal(result.state.release.draft, false);
+    assert.deepEqual(
+      result.state.operations.map((operation) => operation.operation),
+      ["update-draft", "publish", "create-ref"],
+    );
+    const savedAttempt = JSON.parse(
+      result.state.operations[0].body.split(
+        "<!-- gxmmx-release-attempt:v1 -->\n",
+      )[1],
+    );
+    assert.equal(savedAttempt.major_alias_enabled, true);
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("stable alias opt-out is persisted and does not move the alias", async () => {
+  const result = await publish({
+    releasePlan: stablePlan(),
+    recordPlan: stablePlan(),
+    updateMajorAlias: "false",
+  });
+  try {
+    assert.equal(result.state.release.draft, false);
+    assert.equal(result.state.refs["tags/v0"], undefined);
+    assert.deepEqual(
+      result.state.operations.map((operation) => operation.operation),
+      ["update-draft", "publish"],
+    );
+    const savedAttempt = JSON.parse(
+      result.state.operations[0].body.split(
+        "<!-- gxmmx-release-attempt:v1 -->\n",
+      )[1],
+    );
+    assert.equal(savedAttempt.major_alias_enabled, false);
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("retrying an already published stable attempt repairs its alias only", async () => {
+  const stable = stablePlan();
+  const release = releaseRecord(stable);
+  const result = await publish({
+    releasePlan: stable,
+    recordPlan: stable,
+    releaseOverrides: release,
+  });
+  try {
+    assert.equal(result.outputs.published, "true");
+    assert.equal(result.state.refs["tags/v0"], sourceSha);
+    assert.deepEqual(
+      result.state.operations.map((operation) => operation.operation),
+      ["create-ref"],
+    );
+    assert.equal(result.state.release.draft, false);
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("later stable publication stops while an earlier enabled alias is broken", async () => {
+  const earlier = stablePlan();
+  const later = stablePlan("0.3.0");
+  const resultPromise = publish({
+    releasePlan: later,
+    recordPlan: later,
+    existingReleases: [releaseRecord(earlier)],
+    existingRefs: {
+      [`tags/${earlier.versions.next_release_tag}`]: sourceSha,
+      "tags/v0": "b".repeat(40),
+    },
+  });
+  let error;
+  try {
+    await resultPromise;
+  } catch (caught) {
+    error = caught;
+  }
+  try {
+    assert.ok(error);
+    assert.match(errorText(error), /alias v0 is unresolved/i);
+    assert.deepEqual(error.publishState.operations, []);
+  } finally {
+    error?.cleanup?.();
+  }
+});
+
+test("stable alias opt-out lets a later release proceed past a broken predecessor alias", async () => {
+  const earlier = stablePlan();
+  const later = stablePlan("0.3.0");
+  const result = await publish({
+    releasePlan: later,
+    recordPlan: later,
+    updateMajorAlias: "false",
+    existingReleases: [releaseRecord(earlier)],
+    existingRefs: {
+      [`tags/${earlier.versions.next_release_tag}`]: sourceSha,
+      "tags/v0": "b".repeat(40),
+    },
+  });
+  try {
+    assert.equal(result.state.release.draft, false);
+    assert.equal(result.state.refs["tags/v0"], "b".repeat(40));
+    assert.deepEqual(
+      result.state.operations.map((operation) => operation.operation),
+      ["update-draft", "publish"],
+    );
+  } finally {
+    result.cleanup();
+  }
+});
+
+test("a published attempt can explicitly disable a previously enabled alias", async () => {
+  const stable = stablePlan();
+  const release = releaseRecord(stable);
+  const result = await publish({
+    releasePlan: stable,
+    recordPlan: stable,
+    releaseOverrides: release,
+    updateMajorAlias: "false",
+  });
+  try {
+    assert.equal(result.state.release.draft, false);
+    assert.equal(result.state.refs["tags/v0"], undefined);
+    assert.deepEqual(
+      result.state.operations.map((operation) => operation.operation),
+      ["update-draft"],
+    );
+    const stored = JSON.parse(
+      result.state.operations[0].body.split(
+        "<!-- gxmmx-release-attempt:v1 -->\n",
+      )[1],
+    );
+    assert.equal(stored.major_alias_enabled, false);
+  } finally {
+    result.cleanup();
   }
 });

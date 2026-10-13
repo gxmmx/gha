@@ -49,6 +49,9 @@ async function runPreparation({
   associatedPulls = [],
   existingStatuses = [],
   existingReleases = [],
+  historyEntries,
+  statusesBySha = {},
+  existingRefs = {},
   claimedTagSha = null,
   releasePlan,
 } = {}) {
@@ -101,6 +104,9 @@ async function runPreparation({
       next_release_tag: base === "beta" ? "v0.2.0-beta.1" : "v0.2.0",
     },
   };
+  const releaseHistory = historyEntries ?? [
+    { sha: pushedSha, commit: { message: commits.join("\n\n") } },
+  ];
   let tagSha = claimedTagSha;
   let createdDraft;
   const server = createServer((request, response) => {
@@ -122,10 +128,13 @@ async function runPreparation({
         "/repos/gxmmx/testproject/git/ref/tags/",
       )
     ) {
-      if (tagSha)
-        response.end(
-          JSON.stringify({ object: { sha: tagSha, type: "commit" } }),
-        );
+      const ref = decodeURIComponent(request.url).split("/git/ref/")[1];
+      const sha =
+        ref === `tags/${sourcePlan.versions.next_release_tag}`
+          ? tagSha
+          : existingRefs[ref];
+      if (sha)
+        response.end(JSON.stringify({ object: { sha, type: "commit" } }));
       else {
         response.statusCode = 404;
         response.end(JSON.stringify({ message: "Not Found" }));
@@ -180,11 +189,7 @@ async function runPreparation({
       request.method === "GET" &&
       request.url.startsWith(`/repos/gxmmx/testproject/commits?`)
     ) {
-      response.end(
-        JSON.stringify([
-          { sha: pushedSha, commit: { message: commits.join("\n\n") } },
-        ]),
-      );
+      response.end(JSON.stringify(releaseHistory));
     } else if (
       request.method === "GET" &&
       request.url.startsWith(
@@ -194,11 +199,16 @@ async function runPreparation({
       response.end(JSON.stringify(associatedPulls));
     } else if (
       request.method === "GET" &&
-      request.url.startsWith(
-        `/repos/gxmmx/testproject/commits/${pushedSha}/statuses`,
+      /^\/repos\/gxmmx\/testproject\/commits\/[a-f0-9]+\/statuses/.test(
+        request.url,
       )
     ) {
-      response.end(JSON.stringify(existingStatuses));
+      const sha = request.url.split("/commits/")[1].split("/")[0];
+      response.end(
+        JSON.stringify(
+          sha === pushedSha ? existingStatuses : (statusesBySha[sha] ?? []),
+        ),
+      );
     } else if (
       request.method === "POST" &&
       request.url === `/repos/gxmmx/testproject/statuses/${pushedSha}`
@@ -337,6 +347,206 @@ test("release-branch push snapshots the merged PR decision on the exact squash S
   assert.equal(result.createdDraft.draft, true);
   assert.match(result.createdDraft.body, /## Features/);
   assert.match(result.createdDraft.body, /gxmmx-release-attempt:v1/);
+});
+
+function predecessorFixture(statuses = [], existingReleases = []) {
+  const pushedSha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const predecessorSha = "1111111111111111111111111111111111111111";
+  const baselineSha = "0000000000000000000000000000000000000000";
+  const releasePlan = {
+    schema_version: 1,
+    repository: { owner: "gxmmx", name: "testproject" },
+    source: {
+      event: "push",
+      run_id: 1234567,
+      sha: pushedSha,
+      target_branch: "main",
+      pull_request: null,
+    },
+    configuration: {
+      stable_branch: "main",
+      alpha_branch: null,
+      beta_branch: null,
+      rc_branch: null,
+      version_format: "semver",
+    },
+    history: {
+      stable_base_version: "0.1.0",
+      stable_release_tag: "v0.1.0",
+      stable_release_sha: baselineSha,
+    },
+    decision: {
+      channel: "stable",
+      bump: "minor",
+      reason: "release",
+      release_required: true,
+    },
+    versions: {
+      build_version: "0.2.0",
+      next_stable_version: "0.2.0",
+      next_release_version: "0.2.0",
+      next_release_tag: "v0.2.0",
+    },
+  };
+  const historyEntries = [
+    { sha: pushedSha, commit: { message: "feat: current work" } },
+    { sha: predecessorSha, commit: { message: "fix: previous work" } },
+    { sha: baselineSha, commit: { message: "chore: baseline" } },
+  ];
+  return {
+    options: {
+      eventName: "push",
+      ref: "refs/heads/main",
+      pushedSha,
+      releasePlan,
+      historyEntries,
+      statusesBySha: { [predecessorSha]: statuses },
+      existingReleases,
+      associatedPulls: [
+        {
+          number: 42,
+          merged_at: "2026-10-13T12:00:00Z",
+          merge_commit_sha: pushedSha,
+          base: { ref: "main" },
+        },
+      ],
+    },
+    predecessorSha,
+  };
+}
+
+test("stable preparation blocks a predecessor with no recorded decision", async () => {
+  const fixture = predecessorFixture();
+  const result = await runPreparation(fixture.options);
+  assert.ok(result.error);
+  assert.match(
+    errorText(result.error),
+    /unresolved predecessor commit.*decision is missing/i,
+  );
+  assert.ok(
+    !result.requests.some((request) => request.url.endsWith("/git/refs")),
+  );
+  assert.equal(result.createdDraft, undefined);
+});
+
+test("stable preparation blocks a predecessor release attempt until it is published or abandoned", async () => {
+  const sha = "1111111111111111111111111111111111111111";
+  const record = {
+    schema_version: 1,
+    attempt_id: `v0.1.1@${sha.slice(0, 12)}`,
+    tag: "v0.1.1",
+    version: "0.1.1",
+    source_sha: sha,
+    plan: {},
+  };
+  const fixture = predecessorFixture(
+    [
+      {
+        context: "gha/release-decision/stable",
+        state: "success",
+        description: "v1;reason=release;bump=patch",
+      },
+    ],
+    [
+      {
+        id: 77,
+        draft: true,
+        prerelease: false,
+        body: `<!-- gxmmx-release-attempt:v1 -->\n${JSON.stringify(record)}`,
+      },
+    ],
+  );
+  const result = await runPreparation(fixture.options);
+  assert.ok(result.error);
+  assert.match(
+    errorText(result.error),
+    /attempt is not published or abandoned/i,
+  );
+  assert.equal(result.createdDraft, undefined);
+});
+
+test("stable preparation proceeds when earlier release decisions are resolved", async () => {
+  const fixture = predecessorFixture([
+    {
+      context: "gha/release-decision/stable",
+      state: "success",
+      description: "v1;reason=no-changes;bump=none",
+    },
+  ]);
+  const result = await runPreparation(fixture.options);
+  assert.equal(result.error, undefined);
+  assert.equal(result.createdDraft?.tag_name, "v0.2.0");
+});
+
+test("stable preparation proceeds after an earlier attempt is explicitly abandoned", async () => {
+  const sha = "1111111111111111111111111111111111111111";
+  const record = {
+    schema_version: 1,
+    attempt_id: `v0.1.1@${sha.slice(0, 12)}`,
+    tag: "v0.1.1",
+    version: "0.1.1",
+    source_sha: sha,
+    plan: {},
+    abandoned: { reason: "acceptance fixture", at: "2026-10-13T00:00:00Z" },
+  };
+  const fixture = predecessorFixture(
+    [
+      {
+        context: "gha/release-decision/stable",
+        state: "success",
+        description: "v1;reason=release;bump=patch",
+      },
+    ],
+    [
+      {
+        id: 77,
+        draft: true,
+        prerelease: false,
+        body: `<!-- gxmmx-release-attempt:v1 -->\n${JSON.stringify(record)}`,
+      },
+    ],
+  );
+  const result = await runPreparation(fixture.options);
+  assert.equal(result.error, undefined);
+  assert.equal(result.createdDraft?.tag_name, "v0.2.0");
+});
+
+test("stable preparation catches a broken prior alias before claiming or creating a draft", async () => {
+  const previousSha = "2222222222222222222222222222222222222222";
+  const record = {
+    schema_version: 1,
+    attempt_id: `v0.1.0@${previousSha.slice(0, 12)}`,
+    tag: "v0.1.0",
+    version: "0.1.0",
+    source_sha: previousSha,
+    plan: {},
+    major_alias_enabled: true,
+  };
+  const fixture = predecessorFixture(
+    [
+      {
+        context: "gha/release-decision/stable",
+        state: "success",
+        description: "v1;reason=no-changes;bump=none",
+      },
+    ],
+    [
+      {
+        id: 77,
+        draft: false,
+        prerelease: false,
+        body: `<!-- gxmmx-release-attempt:v1 -->\n${JSON.stringify(record)}`,
+      },
+    ],
+  );
+  fixture.options.existingRefs = { "tags/v0": "b".repeat(40) };
+  const result = await runPreparation(fixture.options);
+  assert.ok(result.error);
+  assert.match(errorText(result.error), /alias v0 is unresolved/i);
+  assert.ok(
+    !result.requests.some((request) => request.url.endsWith("/git/refs")),
+  );
+  assert.equal(result.createdDraft, undefined);
 });
 
 test("stale release plan fails before claiming the version tag", async () => {

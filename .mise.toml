@@ -1,0 +1,26 @@
+[tools]
+node = "24.21.0"
+
+[tasks.setup]
+description = "Install the locked Node dependencies"
+run = "npm ci"
+
+[tasks.lint]
+description = "Check formatting"
+run = "npm run lint"
+
+[tasks.typecheck]
+description = "Type-check the TypeScript actions"
+run = "npm run typecheck"
+
+[tasks.test]
+description = "Run action behavior tests"
+run = "npm test"
+
+[tasks.build]
+description = "Bundle production action entry points"
+run = "npm run build"
+
+[tasks.smoke]
+description = "Run the testproject public-action smoke workflow"
+run = "bash scripts/testproject-smoke.sh"

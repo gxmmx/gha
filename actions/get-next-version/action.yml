@@ -1,0 +1,26 @@
+name: Get next version
+description: Produce a build version and read-only release plan from GitHub context.
+outputs:
+  build_version:
+    description: Version identifier for this build.
+  next_stable_version:
+    description: Prospective stable base version, or empty when none is available.
+  next_release_version:
+    description: Proposed release version, or empty when no release is planned.
+  next_release_tag:
+    description: Canonical Git tag for a proposed release, or empty.
+  release_required:
+    description: Whether the plan authorizes release publication.
+  commit_sha:
+    description: Full source commit SHA.
+  channel:
+    description: Resolved release channel, or empty for an unconfigured branch.
+  bump:
+    description: Proposed version bump, or empty when no release is planned.
+  reason:
+    description: Decision reason.
+  release_plan:
+    description: Versioned JSON release plan for later release actions.
+runs:
+  using: node24
+  main: dist/index.js

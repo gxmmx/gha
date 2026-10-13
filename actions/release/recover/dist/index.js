@@ -27169,12 +27169,16 @@ function createGitHubOperations(token) {
     repo: context3.repo.repo
   };
 }
-async function listRepositoryReleases(args) {
+function listRepositoryReleases(args) {
   return args.octokit.paginate(args.octokit.rest.repos.listReleases, {
     owner: args.owner,
     repo: args.repo,
     per_page: 100
   });
+}
+function updateRelease(args) {
+  const { octokit, ...parameters } = args;
+  return octokit.rest.repos.updateRelease(parameters);
 }
 
 // src/prepare-release/attempt.ts
@@ -27282,7 +27286,8 @@ async function main() {
         ...record,
         abandoned: { reason, at: (/* @__PURE__ */ new Date()).toISOString() }
       };
-      const updated = await octokit.rest.repos.updateRelease({
+      const updated = await updateRelease({
+        octokit,
         owner,
         repo,
         release_id: release.id,

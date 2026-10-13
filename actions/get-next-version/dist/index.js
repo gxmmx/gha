@@ -27271,12 +27271,56 @@ function createGitHubOperations(token) {
     repo: context3.repo.repo
   };
 }
-async function listRepositoryReleases(args) {
+function getRepository(args) {
+  return args.octokit.rest.repos.get({ owner: args.owner, repo: args.repo });
+}
+function listRepositoryReleases(args) {
   return args.octokit.paginate(args.octokit.rest.repos.listReleases, {
     owner: args.owner,
     repo: args.repo,
     per_page: 100
   });
+}
+function listRepositoryCommits(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listCommits, {
+    owner: args.owner,
+    repo: args.repo,
+    ...args.sha ? { sha: args.sha } : {},
+    per_page: args.perPage ?? 100
+  });
+}
+function listRepositoryTags(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listTags, {
+    owner: args.owner,
+    repo: args.repo,
+    per_page: 100
+  });
+}
+function getRepositoryCommit(args) {
+  return args.octokit.rest.repos.getCommit({
+    owner: args.owner,
+    repo: args.repo,
+    ref: args.ref
+  });
+}
+function getPullRequest(args) {
+  return args.octokit.rest.pulls.get({
+    owner: args.owner,
+    repo: args.repo,
+    pull_number: args.pullNumber
+  });
+}
+function listPullRequestsAssociatedWithCommit(args) {
+  return args.octokit.paginate(
+    args.octokit.rest.repos.listPullRequestsAssociatedWithCommit,
+    { owner: args.owner, repo: args.repo, commit_sha: args.commitSha }
+  );
+}
+function listCommitStatuses(args) {
+  return args.octokit.paginate(
+    args.octokit.rest.repos.listCommitStatusesForRef,
+    { owner: args.owner, repo: args.repo, ref: args.ref, per_page: 100 }
+  );
 }
 
 // src/get-next-version/index.ts
@@ -27381,10 +27425,12 @@ function publishOutputs(plan) {
 async function pushIsSuppressed(args) {
   const { octokit, owner, repo, sourceSha, targetBranch, channel } = args;
   const contextName = `gha/release-decision/${channel}`;
-  const statuses = await octokit.paginate(
-    octokit.rest.repos.listCommitStatusesForRef,
-    { owner, repo, ref: sourceSha, per_page: 100 }
-  );
+  const statuses = await listCommitStatuses({
+    octokit,
+    owner,
+    repo,
+    ref: sourceSha
+  });
   const recorded = statuses.find((status) => status.context === contextName);
   if (recorded?.state === "success") {
     const match = /^v1;reason=(release|no-changes|suppressed);bump=(none|patch|minor|major)$/.exec(
@@ -27393,10 +27439,12 @@ async function pushIsSuppressed(args) {
     if (!match) throw new Error("Recorded release decision status is invalid");
     return match[1] === "suppressed";
   }
-  const associated = await octokit.paginate(
-    octokit.rest.repos.listPullRequestsAssociatedWithCommit,
-    { owner, repo, commit_sha: sourceSha }
-  );
+  const associated = await listPullRequestsAssociatedWithCommit({
+    octokit,
+    owner,
+    repo,
+    commitSha: sourceSha
+  });
   const matching = associated.filter(
     (pull) => pull.merged_at !== null && pull.merge_commit_sha === sourceSha && pull.base?.ref === targetBranch
   );
@@ -27433,7 +27481,7 @@ async function main() {
   const context3 = context2;
   const token = core.getInput("github_token", { required: true });
   const { octokit, owner, repo: name } = createGitHubOperations(token);
-  const repository = await octokit.rest.repos.get({ owner, repo: name });
+  const repository = await getRepository({ octokit, owner, repo: name });
   const configuration = resolveChannelConfiguration({
     defaultBranch: repository.data.default_branch,
     stableBranchInput: core.getInput("stable_branch"),
@@ -27451,10 +27499,11 @@ async function main() {
     if (!payload?.number)
       throw new Error("Pull request event is missing pull_request.number");
     pullRequest = payload.number;
-    const details = await octokit.rest.pulls.get({
+    const details = await getPullRequest({
+      octokit,
       owner,
       repo: name,
-      pull_number: pullRequest
+      pullNumber: pullRequest
     });
     sourceSha = details.data.head.sha;
     targetBranch = details.data.base.ref;
@@ -27492,17 +27541,13 @@ async function main() {
   }
   const [releases, commits, tags] = await Promise.all([
     listRepositoryReleases({ octokit, owner, repo: name }),
-    octokit.paginate(octokit.rest.repos.listCommits, {
+    listRepositoryCommits({
+      octokit,
       owner,
       repo: name,
-      sha: sourceSha,
-      per_page: 100
+      sha: sourceSha
     }),
-    octokit.paginate(octokit.rest.repos.listTags, {
-      owner,
-      repo: name,
-      per_page: 100
-    })
+    listRepositoryTags({ octokit, owner, repo: name })
   ]);
   if (context3.eventName === "push") {
     const recordedPlan = recordedPlanForSource({
@@ -27542,7 +27587,8 @@ async function main() {
       if (!parsedCandidate) continue;
     }
     const tag = release.tag_name;
-    const taggedCommit = await octokit.rest.repos.getCommit({
+    const taggedCommit = await getRepositoryCommit({
+      octokit,
       owner,
       repo: name,
       ref: tag

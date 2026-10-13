@@ -8,6 +8,7 @@ import {
 import {
   createGitHubOperations,
   listRepositoryReleases,
+  updateRelease,
 } from "../github/operations.js";
 
 type Operation = "resume" | "abandon";
@@ -117,7 +118,8 @@ async function main(): Promise<void> {
         ...record,
         abandoned: { reason, at: new Date().toISOString() },
       };
-      const updated = await octokit.rest.repos.updateRelease({
+      const updated = await updateRelease({
+        octokit,
         owner,
         repo,
         release_id: release.id,

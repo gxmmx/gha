@@ -27174,6 +27174,29 @@ function createGitHubOperations(token) {
     repo: context3.repo.repo
   };
 }
+function getRelease(args) {
+  return args.octokit.rest.repos.getRelease({
+    owner: args.owner,
+    repo: args.repo,
+    release_id: args.releaseId
+  });
+}
+function updateRelease(args) {
+  const { octokit, ...parameters } = args;
+  return octokit.rest.repos.updateRelease(parameters);
+}
+function listReleaseAssets(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listReleaseAssets, {
+    owner: args.owner,
+    repo: args.repo,
+    release_id: args.releaseId,
+    per_page: 100
+  });
+}
+function uploadReleaseAsset(args) {
+  const { octokit, ...parameters } = args;
+  return octokit.rest.repos.uploadReleaseAsset(parameters);
+}
 
 // src/prepare-release/attempt.ts
 var attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
@@ -27284,7 +27307,8 @@ function digestOf(asset) {
 }
 async function putAsset(args) {
   const { octokit, owner, repo, releaseId, name, bytes, baseUrl: baseUrl2 } = args;
-  await octokit.rest.repos.uploadReleaseAsset({
+  await uploadReleaseAsset({
+    octokit,
     owner,
     repo,
     release_id: releaseId,
@@ -27299,10 +27323,11 @@ async function stageReleaseAssets(args) {
   const { octokit, owner, repo, releaseId, attemptId, assetsInput } = args;
   const localAssets = await resolveAssets(assetsInput);
   const desired = manifestFor(localAssets);
-  const release = await octokit.rest.repos.getRelease({
+  const release = await getRelease({
+    octokit,
     owner,
     repo,
-    release_id: releaseId
+    releaseId
   });
   if (!release.data.draft) {
     throw new Error("Release assets can only be staged on a draft release");
@@ -27321,10 +27346,12 @@ async function stageReleaseAssets(args) {
       "Retry supplies different asset bytes for this release attempt"
     );
   }
-  const existingAssets = await octokit.paginate(
-    octokit.rest.repos.listReleaseAssets,
-    { owner, repo, release_id: releaseId, per_page: 100 }
-  );
+  const existingAssets = await listReleaseAssets({
+    octokit,
+    owner,
+    repo,
+    releaseId
+  });
   const expected = /* @__PURE__ */ new Map();
   for (const asset of desired.assets) expected.set(asset.name, asset);
   if (desired.checksum_asset) {
@@ -27344,7 +27371,8 @@ async function stageReleaseAssets(args) {
   }
   if (!record.asset_manifest) {
     const updated = { ...record, asset_manifest: desired };
-    await octokit.rest.repos.updateRelease({
+    await updateRelease({
+      octokit,
       owner,
       repo,
       release_id: releaseId,

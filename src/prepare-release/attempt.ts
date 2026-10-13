@@ -1,5 +1,8 @@
 import { CommitParser } from "conventional-commits-parser";
 import {
+  createGitRef,
+  createRelease,
+  getGitRef,
   listRepositoryReleases,
   type GitHubClient,
 } from "../github/operations.js";
@@ -172,7 +175,8 @@ async function ensureTagClaim(args: {
   const { octokit, owner, repo, tag, sourceSha } = args;
   let claimedSha: string | null = null;
   try {
-    const ref = await octokit.rest.git.getRef({
+    const ref = await getGitRef({
+      octokit,
       owner,
       repo,
       ref: `tags/${tag}`,
@@ -188,7 +192,8 @@ async function ensureTagClaim(args: {
   }
   if (claimedSha) return;
   try {
-    await octokit.rest.git.createRef({
+    await createGitRef({
+      octokit,
       owner,
       repo,
       ref: `refs/tags/${tag}`,
@@ -196,7 +201,8 @@ async function ensureTagClaim(args: {
     });
   } catch (error) {
     if ((error as { status?: number }).status !== 422) throw error;
-    const ref = await octokit.rest.git.getRef({
+    const ref = await getGitRef({
+      octokit,
       owner,
       repo,
       ref: `tags/${tag}`,
@@ -333,7 +339,8 @@ export async function establishAttempt(args: {
     plan: { ...plan, attempt_id: id },
   };
   const body = serializeAttemptBody(notes, record);
-  const created = await octokit.rest.repos.createRelease({
+  const created = await createRelease({
+    octokit,
     owner,
     repo,
     tag_name: tag,

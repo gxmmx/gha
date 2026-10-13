@@ -27172,12 +27172,59 @@ function createGitHubOperations(token) {
     repo: context3.repo.repo
   };
 }
-async function listRepositoryReleases(args) {
+function listRepositoryReleases(args) {
   return args.octokit.paginate(args.octokit.rest.repos.listReleases, {
     owner: args.owner,
     repo: args.repo,
     per_page: 100
   });
+}
+function getGitRef(args) {
+  return args.octokit.rest.git.getRef({
+    owner: args.owner,
+    repo: args.repo,
+    ref: args.ref
+  });
+}
+function createGitRef(args) {
+  return args.octokit.rest.git.createRef({
+    owner: args.owner,
+    repo: args.repo,
+    ref: args.ref,
+    sha: args.sha
+  });
+}
+function updateGitRef(args) {
+  return args.octokit.rest.git.updateRef({
+    owner: args.owner,
+    repo: args.repo,
+    ref: args.ref,
+    sha: args.sha,
+    force: args.force
+  });
+}
+function getRelease(args) {
+  return args.octokit.rest.repos.getRelease({
+    owner: args.owner,
+    repo: args.repo,
+    release_id: args.releaseId
+  });
+}
+function updateRelease(args) {
+  const { octokit, ...parameters } = args;
+  return octokit.rest.repos.updateRelease(parameters);
+}
+function listReleaseAssets(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listReleaseAssets, {
+    owner: args.owner,
+    repo: args.repo,
+    release_id: args.releaseId,
+    per_page: 100
+  });
+}
+function uploadReleaseAsset(args) {
+  const { octokit, ...parameters } = args;
+  return octokit.rest.repos.uploadReleaseAsset(parameters);
 }
 
 // src/prepare-release/attempt.ts
@@ -27327,14 +27374,15 @@ async function setMajorAlias(args) {
   const ref = `tags/v${major}`;
   let currentSha = null;
   try {
-    const current = await octokit.rest.git.getRef({ owner, repo, ref });
+    const current = await getGitRef({ octokit, owner, repo, ref });
     currentSha = current.data.object.sha;
   } catch (error) {
     if (error.status !== 404) throw error;
   }
   if (currentSha === sourceSha) return;
   if (currentSha) {
-    await octokit.rest.git.updateRef({
+    await updateGitRef({
+      octokit,
       owner,
       repo,
       ref,
@@ -27344,7 +27392,8 @@ async function setMajorAlias(args) {
     return;
   }
   try {
-    await octokit.rest.git.createRef({
+    await createGitRef({
+      octokit,
       owner,
       repo,
       ref: `refs/${ref}`,
@@ -27352,7 +27401,8 @@ async function setMajorAlias(args) {
     });
   } catch (error) {
     if (error.status !== 422) throw error;
-    await octokit.rest.git.updateRef({
+    await updateGitRef({
+      octokit,
       owner,
       repo,
       ref,
@@ -27385,7 +27435,8 @@ async function verifyPreviousMajorAliases(args) {
     if (!latest.aliasEnabled) continue;
     let aliasSha = null;
     try {
-      const alias = await octokit.rest.git.getRef({
+      const alias = await getGitRef({
+        octokit,
         owner,
         repo,
         ref: `tags/v${major}`
@@ -27421,7 +27472,8 @@ async function assertLatestForMajor(args) {
 }
 async function uploadReceipt(args) {
   const { octokit, owner, repo, releaseId, bytes } = args;
-  await octokit.rest.repos.uploadReleaseAsset({
+  await uploadReleaseAsset({
+    octokit,
     owner,
     repo,
     release_id: releaseId,
@@ -27442,10 +27494,11 @@ async function publishRelease(args) {
     receipt,
     updateMajorAlias
   } = args;
-  const current = await octokit.rest.repos.getRelease({
+  const current = await getRelease({
+    octokit,
     owner,
     repo,
-    release_id: releaseId
+    releaseId
   });
   const release = current.data;
   if (release.tag_name !== plan.versions.next_release_tag) {
@@ -27455,7 +27508,8 @@ async function publishRelease(args) {
   if (!record)
     throw new Error("Release is missing its prepared attempt record");
   validatePlan({ plan, record, attemptId, owner, repo });
-  const tagRef = await octokit.rest.git.getRef({
+  const tagRef = await getGitRef({
+    octokit,
     owner,
     repo,
     ref: `tags/${record.tag}`
@@ -27474,11 +27528,11 @@ async function publishRelease(args) {
       "Retry supplied a different registry receipt for this attempt"
     );
   }
-  const assets = await octokit.paginate(octokit.rest.repos.listReleaseAssets, {
+  const assets = await listReleaseAssets({
+    octokit,
     owner,
     repo,
-    release_id: releaseId,
-    per_page: 100
+    releaseId
   });
   const assetByName = new Map(assets.map((asset) => [asset.name, asset]));
   const claimedAssets = /* @__PURE__ */ new Map();
@@ -27546,7 +27600,8 @@ async function publishRelease(args) {
       });
     }
     if (stable && record.major_alias_enabled !== aliasEnabled) {
-      await octokit.rest.repos.updateRelease({
+      await updateRelease({
+        octokit,
         owner,
         repo,
         release_id: releaseId,
@@ -27602,7 +27657,8 @@ async function publishRelease(args) {
   );
   const body = serializeAttemptBody(notes, updatedRecord);
   if (finalReceipt || stable && record.major_alias_enabled === void 0) {
-    const saved = await octokit.rest.repos.updateRelease({
+    const saved = await updateRelease({
+      octokit,
       owner,
       repo,
       release_id: releaseId,
@@ -27616,10 +27672,12 @@ async function publishRelease(args) {
       throw new Error("Release metadata was not stored on the draft release");
     }
     if (finalReceipt) {
-      const savedAssets = await octokit.paginate(
-        octokit.rest.repos.listReleaseAssets,
-        { owner, repo, release_id: releaseId, per_page: 100 }
-      );
+      const savedAssets = await listReleaseAssets({
+        octokit,
+        owner,
+        repo,
+        releaseId
+      });
       const savedReceiptAsset = savedAssets.find(
         (asset) => asset.name === receiptAssetName
       );
@@ -27631,7 +27689,8 @@ async function publishRelease(args) {
       assertAssetMatches(savedReceiptAsset, expectedReceipt);
     }
   }
-  const published = await octokit.rest.repos.updateRelease({
+  const published = await updateRelease({
+    octokit,
     owner,
     repo,
     release_id: releaseId,

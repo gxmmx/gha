@@ -7,6 +7,21 @@ import {
   resolveChannelConfiguration,
   type ReleaseChannel,
 } from "../get-next-version/channels";
+import {
+  createGitHubOperations,
+  createCommitStatus,
+  getGitRef,
+  getPullRequest,
+  getRepository,
+  listCommitStatuses,
+  listPullRequestCommits,
+  listPullRequestsAssociatedWithCommit,
+  listRepositoryCommits,
+  listRepositoryReleases,
+  updatePullRequestTitle,
+  type GitHubClient,
+} from "../github/operations.js";
+import { compareStableVersions } from "../get-next-version/versions.js";
 
 type Bump = "none" | "patch" | "minor" | "major";
 type Channel = Exclude<ReleaseChannel, null>;
@@ -185,17 +200,8 @@ function parseDecision(description: string | null): {
   };
 }
 
-function compareStableVersions(left: string, right: string): number {
-  const a = left.split(".").map(Number);
-  const b = right.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] !== b[index]) return a[index] - b[index];
-  }
-  return 0;
-}
-
 async function assertStablePredecessorsResolved(args: {
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   history: Array<{ sha: string; commit: { message: string } }>;
@@ -222,11 +228,7 @@ async function assertStablePredecessorsResolved(args: {
   );
   if (predecessorHistory.length === 0) return;
   if (baselineIndex < 0) {
-    const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
-      owner,
-      repo,
-      per_page: 100,
-    });
+    const releases = await listRepositoryReleases({ octokit, owner, repo });
     for (const release of releases) {
       if (!release.draft) continue;
       const attempt = parseAttempt(release.body);
@@ -251,19 +253,21 @@ async function assertStablePredecessorsResolved(args: {
   const contextName = decisionContext("stable");
   const statusSets = await Promise.all(
     predecessorHistory.map(async (entry) => {
-      const statuses = (await octokit.paginate(
-        octokit.rest.repos.listCommitStatusesForRef,
-        { owner, repo, ref: entry.sha, per_page: 100 },
-      )) as CommitStatus[];
+      const statuses = (await listCommitStatuses({
+        octokit,
+        owner,
+        repo,
+        ref: entry.sha,
+      })) as CommitStatus[];
       return statuses.find((status) => status.context === contextName);
     }),
   );
 
   const trackedLength = predecessorHistory.length;
-  const releases = (await octokit.paginate(octokit.rest.repos.listReleases, {
+  const releases = (await listRepositoryReleases({
+    octokit,
     owner,
     repo,
-    per_page: 100,
   })) as Array<{
     id: number;
     draft: boolean;
@@ -301,7 +305,8 @@ async function assertStablePredecessorsResolved(args: {
     if (!latest.aliasEnabled) continue;
     let aliasSha: string | null = null;
     try {
-      const alias = await octokit.rest.git.getRef({
+      const alias = await getGitRef({
+        octokit,
         owner,
         repo,
         ref: `tags/v${major}`,
@@ -345,7 +350,7 @@ async function assertStablePredecessorsResolved(args: {
 
 async function preparePush(args: {
   context: typeof github.context;
-  octokit: ReturnType<typeof github.getOctokit>;
+  octokit: GitHubClient;
   owner: string;
   repo: string;
   targetBranch: string;
@@ -379,14 +384,12 @@ async function preparePush(args: {
       "Release preparation requires the exact pushed branch commit SHA",
     );
   }
-  const associated = (await octokit.paginate(
-    octokit.rest.repos.listPullRequestsAssociatedWithCommit,
-    {
-      owner,
-      repo,
-      commit_sha: sourceSha,
-    },
-  )) as AssociatedPullRequest[];
+  const associated = (await listPullRequestsAssociatedWithCommit({
+    octokit,
+    owner,
+    repo,
+    commitSha: sourceSha,
+  })) as AssociatedPullRequest[];
   const matching = associated.filter(
     (pull) =>
       pull.merged_at !== null &&
@@ -400,15 +403,12 @@ async function preparePush(args: {
   }
   const pullRequest = matching[0];
   const contextName = decisionContext(channel);
-  const statuses = (await octokit.paginate(
-    octokit.rest.repos.listCommitStatusesForRef,
-    {
-      owner,
-      repo,
-      ref: sourceSha,
-      per_page: 100,
-    },
-  )) as CommitStatus[];
+  const statuses = (await listCommitStatuses({
+    octokit,
+    owner,
+    repo,
+    ref: sourceSha,
+  })) as CommitStatus[];
   const existing = statuses.find((status) => status.context === contextName);
   let recorded: ReturnType<typeof parseDecision> | null = null;
   if (existing) {
@@ -435,10 +435,11 @@ async function preparePush(args: {
     return;
   }
 
-  const pull = await octokit.rest.pulls.get({
+  const pull = await getPullRequest({
+    octokit,
     owner,
     repo,
-    pull_number: pullRequest.number,
+    pullNumber: pullRequest.number,
   });
   if (
     pull.data.merged_at == null ||
@@ -453,11 +454,11 @@ async function preparePush(args: {
   let bump = recorded?.bump;
   let messages: string[] = [];
   if (!recorded) {
-    const commits = (await octokit.paginate(octokit.rest.pulls.listCommits, {
+    const commits = (await listPullRequestCommits({
+      octokit,
       owner,
       repo,
-      pull_number: pullRequest.number,
-      per_page: 100,
+      pullNumber: pullRequest.number,
     })) as PullRequestCommit[];
     if (commits.length === 0 || commits.length >= 250) {
       throw new Error(
@@ -480,7 +481,8 @@ async function preparePush(args: {
         ? "no-changes"
         : "release";
     bump = reason === "suppressed" ? "none" : signal.bump;
-    await octokit.rest.repos.createCommitStatus({
+    await createCommitStatus({
+      octokit,
       owner,
       repo,
       sha: sourceSha,
@@ -534,11 +536,11 @@ async function preparePush(args: {
         "release_plan is stale or does not match the pushed release decision; run get-next-version again",
       );
     }
-    const history = (await octokit.paginate(octokit.rest.repos.listCommits, {
+    const history = (await listRepositoryCommits({
+      octokit,
       owner,
       repo,
       sha: sourceSha,
-      per_page: 100,
     })) as Array<{ sha: string; commit: { message: string } }>;
     if (
       !history.length ||
@@ -612,10 +614,9 @@ async function preparePush(args: {
 
 async function main(): Promise<void> {
   const context = github.context;
-  const { owner, repo } = context.repo;
   const token = core.getInput("github_token", { required: true });
-  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
-  const repository = await octokit.rest.repos.get({ owner, repo });
+  const { octokit, owner, repo } = createGitHubOperations(token);
+  const repository = await getRepository({ octokit, owner, repo });
   const configuration = resolveChannelConfiguration({
     defaultBranch: repository.data.default_branch,
     stableBranchInput: core.getInput("stable_branch"),
@@ -650,10 +651,11 @@ async function main(): Promise<void> {
   const payload = context.payload.pull_request;
   if (!payload?.number)
     throw new Error("Pull request event is missing pull_request.number");
-  const pull = await octokit.rest.pulls.get({
+  const pull = await getPullRequest({
+    octokit,
     owner,
     repo,
-    pull_number: payload.number,
+    pullNumber: payload.number,
   });
   const targetBranch = pull.data.base.ref;
   const channel = channelForBranch(configuration, targetBranch);
@@ -672,11 +674,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  const commits = (await octokit.paginate(octokit.rest.pulls.listCommits, {
+  const commits = (await listPullRequestCommits({
+    octokit,
     owner,
     repo,
-    pull_number: payload.number,
-    per_page: 100,
+    pullNumber: payload.number,
   })) as PullRequestCommit[];
   if (commits.length === 0) {
     throw new Error("Pull request commit history is empty or incomplete");
@@ -713,10 +715,11 @@ async function main(): Promise<void> {
   let titleUpdateError: string | undefined;
   if (!titleUpdated) {
     try {
-      await octokit.rest.pulls.update({
+      await updatePullRequestTitle({
+        octokit,
         owner,
         repo,
-        pull_number: payload.number,
+        pullNumber: payload.number,
         title,
       });
       titleUpdated = true;

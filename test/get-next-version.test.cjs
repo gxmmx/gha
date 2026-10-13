@@ -30,6 +30,119 @@ function outputsFrom(outputFile) {
   return values;
 }
 
+async function runPushPlan({
+  sourceSha = "1234567890abcdef1234567890abcdef12345678",
+  labels = [],
+  statuses = [],
+  versionFormat = "semver",
+  noReleaseLabel = "no-release",
+} = {}) {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
+  const outputFile = path.join(temp, "outputs");
+  writeFileSync(outputFile, "");
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/repos/gxmmx/testproject") {
+      response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
+      response.end("[]");
+    } else if (
+      request.url.startsWith(
+        `/repos/gxmmx/testproject/commits/${sourceSha}/statuses`,
+      )
+    ) {
+      response.end(JSON.stringify(statuses));
+    } else if (
+      request.url.startsWith(
+        `/repos/gxmmx/testproject/commits/${sourceSha}/pulls`,
+      )
+    ) {
+      response.end(
+        JSON.stringify([
+          {
+            number: 42,
+            merged_at: "2026-10-13T12:00:00Z",
+            merge_commit_sha: sourceSha,
+            base: { ref: "main" },
+            labels: labels.map((name) => ({ name })),
+          },
+        ]),
+      );
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits?")) {
+      response.end(
+        JSON.stringify([
+          {
+            sha: sourceSha,
+            commit: { message: "feat: add reusable release workflow" },
+          },
+        ]),
+      );
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "Not Found" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await execFileAsync(process.execPath, [action], {
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_SHA: sourceSha,
+        GITHUB_REPOSITORY: "gxmmx/testproject",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_RUN_ID: "5678",
+        GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
+        INPUT_GITHUB_TOKEN: "test-token",
+        INPUT_VERSION_FORMAT: versionFormat,
+        INPUT_NO_RELEASE_LABEL: noReleaseLabel,
+      },
+    });
+    return outputsFrom(outputFile);
+  } finally {
+    server.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+}
+
+test("merged PR suppression clears release outputs and keeps the selected build profile", async () => {
+  const values = await runPushPlan({
+    labels: ["skip-release"],
+    versionFormat: "pep440",
+    noReleaseLabel: "skip-release",
+  });
+  assert.equal(values.reason, "suppressed");
+  assert.equal(values.release_required, "false");
+  assert.equal(values.next_release_version, "");
+  assert.equal(values.next_release_tag, "");
+  assert.equal(values.build_version, "0.0.0.dev5678");
+  const plan = JSON.parse(values.release_plan);
+  assert.equal(plan.configuration.version_format, "pep440");
+  assert.equal(plan.decision.bump, "none");
+  assert.equal(plan.decision.reason, "suppressed");
+});
+
+test("recorded release decision takes precedence over a changed PR label", async () => {
+  const values = await runPushPlan({
+    labels: ["no-release"],
+    statuses: [
+      {
+        context: "gha/release-decision/stable",
+        state: "success",
+        description: "v1;reason=release;bump=minor",
+      },
+    ],
+  });
+  assert.equal(values.reason, "release");
+  assert.equal(values.release_required, "true");
+  assert.equal(values.next_release_version, "0.2.0");
+  assert.equal(values.next_release_tag, "v0.2.0");
+});
+
 test("unconfigured branch outputs a short-SHA build version and non-publishable plan", async () => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
   const outputFile = path.join(temp, "outputs");
@@ -428,6 +541,85 @@ test("stable planning starts after the latest reachable stable release", async (
     const plan = JSON.parse(values.release_plan);
     assert.equal(plan.history.stable_base_version, "1.4.2");
     assert.equal(plan.history.stable_release_sha, baselineSha);
+  } finally {
+    server.close();
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("candidate planning orders stable releases numerically", async () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "gha-action-test-"));
+  const outputFile = path.join(temp, "outputs");
+  writeFileSync(outputFile, "");
+  const sourceSha = "1234567890abcdef1234567890abcdef12345678";
+  const latestStableSha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const olderStableSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/repos/gxmmx/testproject") {
+      response.end(JSON.stringify({ default_branch: "main" }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/releases")) {
+      response.end(
+        JSON.stringify([
+          { tag_name: "v1.9.0", prerelease: false, draft: false },
+          { tag_name: "v1.10.0", prerelease: false, draft: false },
+        ]),
+      );
+    } else if (request.url === "/repos/gxmmx/testproject/commits/v1.9.0") {
+      response.end(JSON.stringify({ sha: olderStableSha }));
+    } else if (request.url === "/repos/gxmmx/testproject/commits/v1.10.0") {
+      response.end(JSON.stringify({ sha: latestStableSha }));
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/tags")) {
+      response.end("[]");
+    } else if (
+      request.url.startsWith(
+        `/repos/gxmmx/testproject/commits/${sourceSha}/statuses`,
+      )
+    ) {
+      response.end("[]");
+    } else if (
+      request.url.startsWith(
+        `/repos/gxmmx/testproject/commits/${sourceSha}/pulls`,
+      )
+    ) {
+      response.end("[]");
+    } else if (request.url.startsWith("/repos/gxmmx/testproject/commits?")) {
+      response.end(
+        JSON.stringify([
+          {
+            sha: sourceSha,
+            commit: { message: "feat: add candidate feature" },
+          },
+          { sha: latestStableSha, commit: { message: "chore: v1.10.0" } },
+          { sha: olderStableSha, commit: { message: "chore: v1.9.0" } },
+        ]),
+      );
+    } else {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "Not Found" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await execFileAsync(process.execPath, [action], {
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: "true",
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_SHA: sourceSha,
+        GITHUB_REPOSITORY: "gxmmx/testproject",
+        GITHUB_REF: "refs/heads/beta",
+        GITHUB_EVENT_NAME: "push",
+        GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`,
+        INPUT_GITHUB_TOKEN: "test-token",
+        INPUT_BETA_BRANCH: "beta",
+      },
+    });
+    const values = outputsFrom(outputFile);
+    const plan = JSON.parse(values.release_plan);
+    assert.equal(plan.history.stable_base_version, "1.10.0");
+    assert.equal(values.next_stable_version, "1.11.0");
+    assert.equal(values.next_release_tag, "v1.11.0-beta.1");
   } finally {
     server.close();
     rmSync(temp, { recursive: true, force: true });

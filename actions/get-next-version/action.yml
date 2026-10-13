@@ -19,6 +19,10 @@ inputs:
   version_format:
     description: Build and release version profile (semver or pep440).
     required: false
+  no_release_label:
+    description: Pull request label that suppresses publication; defaults to no-release.
+    required: false
+    default: no-release
 outputs:
   build_version:
     description: Version identifier for this build.
@@ -29,7 +33,7 @@ outputs:
   next_release_tag:
     description: Canonical Git tag for a proposed release, or empty.
   release_required:
-    description: Whether the plan authorizes release publication.
+    description: Whether the configured push has an unsuppressed release decision.
   commit_sha:
     description: Full source commit SHA.
   channel:

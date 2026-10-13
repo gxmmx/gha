@@ -27262,6 +27262,67 @@ function formatStableVersion(version, _format) {
   return version;
 }
 
+// src/github/operations.ts
+function createGitHubOperations(token) {
+  const context3 = context2;
+  return {
+    octokit: getOctokit(token, { baseUrl: context3.apiUrl }),
+    owner: context3.repo.owner,
+    repo: context3.repo.repo
+  };
+}
+function getRepository(args) {
+  return args.octokit.rest.repos.get({ owner: args.owner, repo: args.repo });
+}
+function listRepositoryReleases(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listReleases, {
+    owner: args.owner,
+    repo: args.repo,
+    per_page: 100
+  });
+}
+function listRepositoryCommits(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listCommits, {
+    owner: args.owner,
+    repo: args.repo,
+    ...args.sha ? { sha: args.sha } : {},
+    per_page: args.perPage ?? 100
+  });
+}
+function listRepositoryTags(args) {
+  return args.octokit.paginate(args.octokit.rest.repos.listTags, {
+    owner: args.owner,
+    repo: args.repo,
+    per_page: 100
+  });
+}
+function getRepositoryCommit(args) {
+  return args.octokit.rest.repos.getCommit({
+    owner: args.owner,
+    repo: args.repo,
+    ref: args.ref
+  });
+}
+function getPullRequest(args) {
+  return args.octokit.rest.pulls.get({
+    owner: args.owner,
+    repo: args.repo,
+    pull_number: args.pullNumber
+  });
+}
+function listPullRequestsAssociatedWithCommit(args) {
+  return args.octokit.paginate(
+    args.octokit.rest.repos.listPullRequestsAssociatedWithCommit,
+    { owner: args.owner, repo: args.repo, commit_sha: args.commitSha }
+  );
+}
+function listCommitStatuses(args) {
+  return args.octokit.paginate(
+    args.octokit.rest.repos.listCommitStatusesForRef,
+    { owner: args.owner, repo: args.repo, ref: args.ref, per_page: 100 }
+  );
+}
+
 // src/get-next-version/index.ts
 var parser = new CommitParser({
   headerPattern: /^([A-Za-z][A-Za-z0-9-]*)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
@@ -27361,6 +27422,34 @@ function publishOutputs(plan) {
   core.setOutput("reason", plan.decision.reason);
   core.setOutput("release_plan", JSON.stringify(plan));
 }
+async function pushIsSuppressed(args) {
+  const { octokit, owner, repo, sourceSha, targetBranch, channel } = args;
+  const contextName = `gha/release-decision/${channel}`;
+  const statuses = await listCommitStatuses({
+    octokit,
+    owner,
+    repo,
+    ref: sourceSha
+  });
+  const recorded = statuses.find((status) => status.context === contextName);
+  if (recorded?.state === "success") {
+    const match = /^v1;reason=(release|no-changes|suppressed);bump=(none|patch|minor|major)$/.exec(
+      recorded.description ?? ""
+    );
+    if (!match) throw new Error("Recorded release decision status is invalid");
+    return match[1] === "suppressed";
+  }
+  const associated = await listPullRequestsAssociatedWithCommit({
+    octokit,
+    owner,
+    repo,
+    commitSha: sourceSha
+  });
+  const matching = associated.filter(
+    (pull) => pull.merged_at !== null && pull.merge_commit_sha === sourceSha && pull.base?.ref === targetBranch
+  );
+  return matching.length === 1 && matching[0].labels?.some((label) => label.name === args.noReleaseLabel) === true;
+}
 function recordedPlanForSource(args) {
   const marker = "<!-- gxmmx-release-attempt:v1 -->";
   const configuration = {
@@ -27390,10 +27479,9 @@ function recordedPlanForSource(args) {
 }
 async function main() {
   const context3 = context2;
-  const { owner, repo: name } = context3.repo;
   const token = core.getInput("github_token", { required: true });
-  const octokit = getOctokit(token, { baseUrl: context3.apiUrl });
-  const repository = await octokit.rest.repos.get({ owner, repo: name });
+  const { octokit, owner, repo: name } = createGitHubOperations(token);
+  const repository = await getRepository({ octokit, owner, repo: name });
   const configuration = resolveChannelConfiguration({
     defaultBranch: repository.data.default_branch,
     stableBranchInput: core.getInput("stable_branch"),
@@ -27411,10 +27499,11 @@ async function main() {
     if (!payload?.number)
       throw new Error("Pull request event is missing pull_request.number");
     pullRequest = payload.number;
-    const details = await octokit.rest.pulls.get({
+    const details = await getPullRequest({
+      octokit,
       owner,
       repo: name,
-      pull_number: pullRequest
+      pullNumber: pullRequest
     });
     sourceSha = details.data.head.sha;
     targetBranch = details.data.base.ref;
@@ -27451,22 +27540,14 @@ async function main() {
     return;
   }
   const [releases, commits, tags] = await Promise.all([
-    octokit.paginate(octokit.rest.repos.listReleases, {
+    listRepositoryReleases({ octokit, owner, repo: name }),
+    listRepositoryCommits({
+      octokit,
       owner,
       repo: name,
-      per_page: 100
+      sha: sourceSha
     }),
-    octokit.paginate(octokit.rest.repos.listCommits, {
-      owner,
-      repo: name,
-      sha: sourceSha,
-      per_page: 100
-    }),
-    octokit.paginate(octokit.rest.repos.listTags, {
-      owner,
-      repo: name,
-      per_page: 100
-    })
+    listRepositoryTags({ octokit, owner, repo: name })
   ]);
   if (context3.eventName === "push") {
     const recordedPlan = recordedPlanForSource({
@@ -27481,6 +27562,15 @@ async function main() {
       return;
     }
   }
+  const suppressedPush = context3.eventName === "push" && await pushIsSuppressed({
+    octokit,
+    owner,
+    repo: name,
+    sourceSha,
+    targetBranch,
+    channel,
+    noReleaseLabel: core.getInput("no_release_label") || "no-release"
+  });
   const commitPositions = new Map(
     commits.map((commit, index) => [commit.sha, index])
   );
@@ -27497,7 +27587,8 @@ async function main() {
       if (!parsedCandidate) continue;
     }
     const tag = release.tag_name;
-    const taggedCommit = await octokit.rest.repos.getCommit({
+    const taggedCommit = await getRepositoryCommit({
+      octokit,
       owner,
       repo: name,
       ref: tag
@@ -27545,8 +27636,8 @@ async function main() {
     bump = stronger(bump, bumpForMessage(commit.commit.message));
   }
   let nextStableVersion = bump === "none" ? null : nextVersion(stableBase, bump);
-  const releaseRequired = !preview && bump !== "none";
-  const reason = preview ? "preview" : bump === "none" ? "no-changes" : "release";
+  let releaseRequired = !preview && bump !== "none";
+  let reason = preview ? "preview" : bump === "none" ? "no-changes" : "release";
   let nextReleaseVersion = null;
   let nextReleaseTag = null;
   if (releaseRequired && nextStableVersion) {
@@ -27586,8 +27677,8 @@ async function main() {
       nextReleaseTag = matchingRerun?.tag ?? canonicalCandidateTag(nextStableVersion, channel, counter);
     }
   }
-  const formattedNextStableVersion = nextStableVersion ? formatStableVersion(nextStableVersion, configuration.versionFormat) : null;
-  const buildVersion = preview ? previewBuildVersion({
+  let formattedNextStableVersion = nextStableVersion ? formatStableVersion(nextStableVersion, configuration.versionFormat) : null;
+  let buildVersion = preview ? previewBuildVersion({
     format: configuration.versionFormat,
     prospectiveVersion: formattedNextStableVersion,
     pullRequest,
@@ -27598,6 +27689,20 @@ async function main() {
     sourceSha,
     context3.runId
   );
+  if (suppressedPush) {
+    bump = "none";
+    reason = "suppressed";
+    releaseRequired = false;
+    nextStableVersion = null;
+    formattedNextStableVersion = null;
+    nextReleaseVersion = null;
+    nextReleaseTag = null;
+    buildVersion = fallbackBuildVersion(
+      configuration.versionFormat,
+      sourceSha,
+      context3.runId
+    );
+  }
   const plan = makePlan({
     owner,
     name,

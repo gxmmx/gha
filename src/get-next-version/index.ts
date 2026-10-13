@@ -21,9 +21,22 @@ import {
   previewBuildVersion,
   type VersionFormat,
 } from "./version-profile.js";
+import {
+  createGitHubOperations,
+  getPullRequest,
+  getRepository,
+  getRepositoryCommit,
+  listCommitStatuses,
+  listPullRequestsAssociatedWithCommit,
+  listRepositoryCommits,
+  listRepositoryReleases,
+  listRepositoryTags,
+  type GitHubClient,
+} from "../github/operations.js";
 
 type Bump = "none" | "patch" | "minor" | "major";
-type Reason = "release" | "preview" | "no-changes" | "unmatched-branch";
+type Reason =
+  "release" | "preview" | "no-changes" | "suppressed" | "unmatched-branch";
 
 interface ReleasePlan {
   schema_version: 1;
@@ -76,6 +89,19 @@ interface RepositoryTag {
 interface CommitEntry {
   sha: string;
   commit: { message: string };
+}
+
+interface AssociatedPullRequest {
+  merged_at: string | null;
+  merge_commit_sha: string | null;
+  base?: { ref?: string };
+  labels?: Array<{ name: string }>;
+}
+
+interface CommitStatus {
+  context: string;
+  state: string;
+  description: string | null;
 }
 
 const parser = new CommitParser({
@@ -216,6 +242,52 @@ function publishOutputs(plan: ReleasePlan): void {
   core.setOutput("release_plan", JSON.stringify(plan));
 }
 
+async function pushIsSuppressed(args: {
+  octokit: GitHubClient;
+  owner: string;
+  repo: string;
+  sourceSha: string;
+  targetBranch: string;
+  channel: Exclude<ReleaseChannel, null>;
+  noReleaseLabel: string;
+}): Promise<boolean> {
+  const { octokit, owner, repo, sourceSha, targetBranch, channel } = args;
+  const contextName = `gha/release-decision/${channel}`;
+  const statuses = (await listCommitStatuses({
+    octokit,
+    owner,
+    repo,
+    ref: sourceSha,
+  })) as CommitStatus[];
+  const recorded = statuses.find((status) => status.context === contextName);
+  if (recorded?.state === "success") {
+    const match =
+      /^v1;reason=(release|no-changes|suppressed);bump=(none|patch|minor|major)$/.exec(
+        recorded.description ?? "",
+      );
+    if (!match) throw new Error("Recorded release decision status is invalid");
+    return match[1] === "suppressed";
+  }
+
+  const associated = (await listPullRequestsAssociatedWithCommit({
+    octokit,
+    owner,
+    repo,
+    commitSha: sourceSha,
+  })) as AssociatedPullRequest[];
+  const matching = associated.filter(
+    (pull) =>
+      pull.merged_at !== null &&
+      pull.merge_commit_sha === sourceSha &&
+      pull.base?.ref === targetBranch,
+  );
+  return (
+    matching.length === 1 &&
+    matching[0].labels?.some((label) => label.name === args.noReleaseLabel) ===
+      true
+  );
+}
+
 function recordedPlanForSource(args: {
   releases: StableRelease[];
   sourceSha: string;
@@ -279,10 +351,9 @@ function recordedPlanForSource(args: {
 
 async function main(): Promise<void> {
   const context = github.context;
-  const { owner, repo: name } = context.repo;
   const token = core.getInput("github_token", { required: true });
-  const octokit = github.getOctokit(token, { baseUrl: context.apiUrl });
-  const repository = await octokit.rest.repos.get({ owner, repo: name });
+  const { octokit, owner, repo: name } = createGitHubOperations(token);
+  const repository = await getRepository({ octokit, owner, repo: name });
   const configuration = resolveChannelConfiguration({
     defaultBranch: repository.data.default_branch,
     stableBranchInput: core.getInput("stable_branch"),
@@ -304,10 +375,11 @@ async function main(): Promise<void> {
     if (!payload?.number)
       throw new Error("Pull request event is missing pull_request.number");
     pullRequest = payload.number;
-    const details = await octokit.rest.pulls.get({
+    const details = await getPullRequest({
+      octokit,
       owner,
       repo: name,
-      pull_number: pullRequest,
+      pullNumber: pullRequest,
     });
     sourceSha = details.data.head.sha;
     targetBranch = details.data.base.ref;
@@ -346,22 +418,14 @@ async function main(): Promise<void> {
   }
 
   const [releases, commits, tags] = await Promise.all([
-    octokit.paginate(octokit.rest.repos.listReleases, {
-      owner,
-      repo: name,
-      per_page: 100,
-    }),
-    octokit.paginate(octokit.rest.repos.listCommits, {
+    listRepositoryReleases({ octokit, owner, repo: name }),
+    listRepositoryCommits({
+      octokit,
       owner,
       repo: name,
       sha: sourceSha,
-      per_page: 100,
     }),
-    octokit.paginate(octokit.rest.repos.listTags, {
-      owner,
-      repo: name,
-      per_page: 100,
-    }),
+    listRepositoryTags({ octokit, owner, repo: name }),
   ]);
   if (context.eventName === "push") {
     const recordedPlan = recordedPlanForSource({
@@ -376,6 +440,17 @@ async function main(): Promise<void> {
       return;
     }
   }
+  const suppressedPush =
+    context.eventName === "push" &&
+    (await pushIsSuppressed({
+      octokit,
+      owner,
+      repo: name,
+      sourceSha,
+      targetBranch,
+      channel,
+      noReleaseLabel: core.getInput("no_release_label") || "no-release",
+    }));
   const commitPositions = new Map(
     commits.map((commit, index) => [commit.sha, index]),
   );
@@ -407,7 +482,8 @@ async function main(): Promise<void> {
       if (!parsedCandidate) continue;
     }
     const tag = release.tag_name;
-    const taggedCommit = await octokit.rest.repos.getCommit({
+    const taggedCommit = await getRepositoryCommit({
+      octokit,
       owner,
       repo: name,
       ref: tag,
@@ -468,8 +544,8 @@ async function main(): Promise<void> {
 
   let nextStableVersion =
     bump === "none" ? null : nextVersion(stableBase, bump);
-  const releaseRequired = !preview && bump !== "none";
-  const reason: Reason = preview
+  let releaseRequired = !preview && bump !== "none";
+  let reason: Reason = preview
     ? "preview"
     : bump === "none"
       ? "no-changes"
@@ -521,10 +597,10 @@ async function main(): Promise<void> {
         canonicalCandidateTag(nextStableVersion, channel, counter);
     }
   }
-  const formattedNextStableVersion = nextStableVersion
+  let formattedNextStableVersion = nextStableVersion
     ? formatStableVersion(nextStableVersion, configuration.versionFormat)
     : null;
-  const buildVersion = preview
+  let buildVersion = preview
     ? previewBuildVersion({
         format: configuration.versionFormat,
         prospectiveVersion: formattedNextStableVersion,
@@ -539,6 +615,20 @@ async function main(): Promise<void> {
         sourceSha,
         context.runId,
       ));
+  if (suppressedPush) {
+    bump = "none";
+    reason = "suppressed";
+    releaseRequired = false;
+    nextStableVersion = null;
+    formattedNextStableVersion = null;
+    nextReleaseVersion = null;
+    nextReleaseTag = null;
+    buildVersion = fallbackBuildVersion(
+      configuration.versionFormat,
+      sourceSha,
+      context.runId,
+    );
+  }
   const plan = makePlan({
     owner,
     name,

@@ -1,0 +1,37 @@
+name: Publish release
+description: Validate and publish a prepared GitHub release after consumer-owned publication.
+inputs:
+  github_token:
+    description: Token used to verify the prepared release, attach its receipt, and publish it.
+    required: true
+  draft_release_id:
+    description: Draft release ID returned by prepare-release.
+    required: true
+  attempt_id:
+    description: Attempt ID returned by prepare-release.
+    required: true
+  release_plan:
+    description: Unmodified prepared release_plan output returned by prepare-release.
+    required: true
+  registry_receipt:
+    description: Optional JSON receipt for consumer-published artifacts and immutable digests.
+    required: false
+  update_major_alias:
+    description: Move the stable v<major> tag after publication; ignored for prerelease channels.
+    required: false
+outputs:
+  published:
+    description: Whether the matching release is published.
+  release_id:
+    description: GitHub release ID finalized by this action.
+  tag:
+    description: Full version tag pinned to the exact prepared source commit.
+  version:
+    description: Published release version.
+  source_sha:
+    description: Exact source commit recorded by the prepared attempt.
+  receipt_asset_name:
+    description: Name of the stored receipt asset, or empty when no receipt was supplied.
+runs:
+  using: node24
+  main: dist/index.js

@@ -1,0 +1,22 @@
+name: Release GHA
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml
+    with:
+      stable_branch: main
+      version_format: semver
+      require_release: true
+      no_release_label: no-release
+      update_major_tag: true

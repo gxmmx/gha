@@ -1,0 +1,23 @@
+{
+  "name": "@gxmmx/gha",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reusable GitHub Actions and workflows",
+  "scripts": {
+    "lint": "prettier --check README.md \"src/**/*.ts\" \"test/**/*.cjs\" \"actions/**/*.yml\" \"actions/**/*.md\" \".github/**/*.yml\" package.json tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.cjs",
+    "build": "esbuild src/get-next-version/index.ts --bundle --platform=node --target=node24 --outfile=actions/get-next-version/dist/index.js && esbuild src/prepare-release/index.ts --bundle --platform=node --target=node24 --outfile=actions/release/prepare-release/dist/index.js && esbuild src/stage-release-assets/index.ts --bundle --platform=node --target=node24 --outfile=actions/release/stage-assets/dist/index.js && esbuild src/publish-release/index.ts --bundle --platform=node --target=node24 --outfile=actions/release/publish/dist/index.js && esbuild src/recover-release/index.ts --bundle --platform=node --target=node24 --outfile=actions/release/recover/dist/index.js"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^9.1.1",
+    "conventional-commits-parser": "^7.1.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.5",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3"
+  }
+}

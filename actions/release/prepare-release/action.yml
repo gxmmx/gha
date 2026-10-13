@@ -1,0 +1,67 @@
+name: Prepare release
+description: Validate pull requests and establish durable drafts for merged release commits.
+inputs:
+  github_token:
+    description: Token used for pull request validation, release decisions, tag claims, and draft creation.
+    required: true
+  stable_branch:
+    description: Stable release branch. Defaults to the repository default branch.
+    required: false
+  alpha_branch:
+    description: Configured alpha release branch; empty disables the channel.
+    required: false
+  beta_branch:
+    description: Configured beta release branch; empty disables the channel.
+    required: false
+  rc_branch:
+    description: Configured RC release branch; empty disables the channel.
+    required: false
+  version_format:
+    description: Version profile used to validate the release plan; semver or pep440.
+    required: false
+    default: semver
+  require_release:
+    description: Require a release-worthy change for stable-target PRs. Defaults to true.
+    required: false
+    default: "true"
+  no_release_label:
+    description: Label that permits a no-bump PR and suppresses publication. Defaults to no-release.
+    required: false
+    default: no-release
+  release_plan:
+    description: Unmodified release_plan output from get-next-version for this push.
+    required: false
+outputs:
+  prepared:
+    description: Whether preparation ran for a configured release branch.
+  reason:
+    description: Preparation result, including unmatched-branch, release, no-changes, or suppressed.
+  title:
+    description: Normalized title derived from the strongest commit signal.
+  title_updated:
+    description: Whether the title is normalized or was successfully updated.
+  title_update_error:
+    description: Explanation when the token cannot write pull request titles.
+  bump:
+    description: Strongest release signal, or none when suppressed.
+  channel:
+    description: Configured release channel, or empty for an unmatched target.
+  release_required:
+    description: Whether this PR or recorded push decision permits publication.
+  pull_request:
+    description: Pull request number from GitHub event context.
+  decision_sha:
+    description: Exact pushed squash commit whose channel decision was recorded; empty for PR runs.
+  decision_context:
+    description: Channel-specific commit status context used for a pushed release decision.
+  attempt_id:
+    description: Stable identity of the retained draft attempt.
+  draft_release_id:
+    description: GitHub release ID of the draft attempt.
+  release_notes:
+    description: Notes snapshotted when the draft attempt was created.
+  release_plan:
+    description: Authoritative release plan with attempt_id attached.
+runs:
+  using: node24
+  main: dist/index.js

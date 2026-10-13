@@ -4,7 +4,9 @@ import { createHash } from "node:crypto";
 import { glob, lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import {
+  attemptAssetName,
   parseAttempt,
+  readAttemptRecord,
   serializeAttemptBody,
   type AssetManifest,
   type AttemptRecord,
@@ -169,7 +171,18 @@ async function stageReleaseAssets(args: {
   if (!release.data.draft) {
     throw new Error("Release assets can only be staged on a draft release");
   }
-  const record = parseAttempt(release.data.body);
+  const existingAssets = await listReleaseAssets({
+    octokit,
+    owner,
+    repo,
+    releaseId,
+  });
+  const record = await readAttemptRecord({
+    octokit,
+    owner,
+    repo,
+    release: { ...release.data, assets: existingAssets },
+  });
   if (
     !record ||
     record.attempt_id !== attemptId ||
@@ -188,16 +201,18 @@ async function stageReleaseAssets(args: {
     );
   }
 
-  const existingAssets = await listReleaseAssets({
-    octokit,
-    owner,
-    repo,
-    releaseId,
-  });
   const expected = new Map<string, StagedAsset>();
   for (const asset of desired.assets) expected.set(asset.name, asset);
   if (desired.checksum_asset) {
     expected.set(desired.checksum_asset.name, desired.checksum_asset);
+  }
+  if (existingAssets.some((asset) => asset.name === attemptAssetName)) {
+    const attemptBytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
+    expected.set(attemptAssetName, {
+      name: attemptAssetName,
+      size: attemptBytes.length,
+      sha256: sha256(attemptBytes),
+    });
   }
   for (const existing of existingAssets) {
     const entry = expected.get(existing.name);

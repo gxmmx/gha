@@ -1,13 +1,17 @@
 import * as core from "@actions/core";
+import * as github from "@actions/github";
 import {
   attemptMarker,
-  parseAttempt,
+  readAttemptRecord,
   serializeAttemptBody,
   type AttemptRecord,
 } from "../prepare-release/attempt.js";
 import {
   createGitHubOperations,
+  deleteReleaseAsset,
+  listReleaseAssets,
   listRepositoryReleases,
+  uploadReleaseAsset,
   updateRelease,
 } from "../github/operations.js";
 
@@ -92,10 +96,19 @@ async function main(): Promise<void> {
     core.getInput("github_token", { required: true }),
   );
   const releases = await listRepositoryReleases({ octokit, owner, repo });
-  const matching = releases.flatMap((release) => {
-    const record = parseAttempt(release.body);
-    return record?.attempt_id === attemptId ? [{ release, record }] : [];
-  });
+  const matching = (
+    await Promise.all(
+      releases.map(async (release) => {
+        const record = await readAttemptRecord({
+          octokit,
+          owner,
+          repo,
+          release,
+        });
+        return record?.attempt_id === attemptId ? { release, record } : null;
+      }),
+    )
+  ).filter((value): value is NonNullable<typeof value> => value !== null);
   if (matching.length === 0) {
     throw new Error(`No release attempt found with ID ${attemptId}`);
   }
@@ -118,6 +131,23 @@ async function main(): Promise<void> {
         ...record,
         abandoned: { reason, at: new Date().toISOString() },
       };
+      const assets = await listReleaseAssets({
+        octokit,
+        owner,
+        repo,
+        releaseId: release.id,
+      });
+      const attemptAsset = assets.find(
+        (asset) => asset.name === "gxmmx-release-attempt.json",
+      );
+      if (attemptAsset) {
+        await deleteReleaseAsset({
+          octokit,
+          owner,
+          repo,
+          assetId: attemptAsset.id,
+        });
+      }
       const updated = await updateRelease({
         octokit,
         owner,
@@ -130,6 +160,24 @@ async function main(): Promise<void> {
         body: serializeAttemptBody(release.body, record),
       });
       release = updated.data;
+      if (attemptAsset) {
+        const bytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
+        await uploadReleaseAsset({
+          octokit,
+          owner,
+          repo,
+          release_id: release.id,
+          name: "gxmmx-release-attempt.json",
+          data: bytes as unknown as string,
+          ...(github.context.apiUrl !== "https://api.github.com"
+            ? { baseUrl: github.context.apiUrl }
+            : {}),
+          headers: {
+            "content-type": "application/json",
+            "content-length": bytes.length,
+          },
+        });
+      }
     }
   } else if (record.abandoned) {
     throw new Error(

@@ -199,6 +199,25 @@ export function listReleaseAssets(
   });
 }
 
+export function getReleaseAsset(args: RepositoryContext & { assetId: number }) {
+  return args.octokit.rest.repos.getReleaseAsset({
+    owner: args.owner,
+    repo: args.repo,
+    asset_id: args.assetId,
+    headers: { accept: "application/octet-stream" },
+  });
+}
+
+export function deleteReleaseAsset(
+  args: RepositoryContext & { assetId: number },
+) {
+  return args.octokit.rest.repos.deleteReleaseAsset({
+    owner: args.owner,
+    repo: args.repo,
+    asset_id: args.assetId,
+  });
+}
+
 export function uploadReleaseAsset(
   args: ReleaseAssetUpload & { octokit: GitHubClient },
 ) {

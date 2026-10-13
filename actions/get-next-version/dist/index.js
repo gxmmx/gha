@@ -9062,8 +9062,8 @@ var require_client_h1 = __commonJS({
         }
       }
     };
-    function onParserTimeout(parser2) {
-      const { socket, timeoutType, client, paused } = parser2.deref();
+    function onParserTimeout(parser3) {
+      const { socket, timeoutType, client, paused } = parser3.deref();
       if (timeoutType === TIMEOUT_HEADERS) {
         if (!socket[kWriting] || socket.writableNeedDrain || client[kRunning] > 1) {
           assert(!paused, "cannot be paused while waiting for headers");
@@ -9094,9 +9094,9 @@ var require_client_h1 = __commonJS({
       socket[kParser] = new Parser(client, socket, llhttpInstance);
       addListener(socket, "error", function(err) {
         assert(err.code !== "ERR_TLS_CERT_ALTNAME_INVALID");
-        const parser2 = this[kParser];
-        if (err.code === "ECONNRESET" && parser2.statusCode && !parser2.shouldKeepAlive) {
-          const parserErr = parser2.finish();
+        const parser3 = this[kParser];
+        if (err.code === "ECONNRESET" && parser3.statusCode && !parser3.shouldKeepAlive) {
+          const parserErr = parser3.finish();
           if (parserErr) {
             this[kError] = parserErr;
             this[kClient][kOnError](parserErr);
@@ -9107,15 +9107,15 @@ var require_client_h1 = __commonJS({
         this[kClient][kOnError](err);
       });
       addListener(socket, "readable", function() {
-        const parser2 = this[kParser];
-        if (parser2) {
-          parser2.readMore();
+        const parser3 = this[kParser];
+        if (parser3) {
+          parser3.readMore();
         }
       });
       addListener(socket, "end", function() {
-        const parser2 = this[kParser];
-        if (parser2.statusCode && !parser2.shouldKeepAlive) {
-          const parserErr = parser2.finish();
+        const parser3 = this[kParser];
+        if (parser3.statusCode && !parser3.shouldKeepAlive) {
+          const parserErr = parser3.finish();
           if (parserErr) {
             util.destroy(this, parserErr);
           }
@@ -9125,11 +9125,11 @@ var require_client_h1 = __commonJS({
       });
       addListener(socket, "close", function() {
         const client2 = this[kClient];
-        const parser2 = this[kParser];
+        const parser3 = this[kParser];
         clearIdleSocketValidation(this);
-        if (parser2) {
-          if (!this[kError] && parser2.statusCode && !parser2.shouldKeepAlive) {
-            this[kError] = parser2.finish() || this[kError];
+        if (parser3) {
+          if (!this[kError] && parser3.statusCode && !parser3.shouldKeepAlive) {
+            this[kError] = parser3.finish() || this[kError];
           }
           this[kParser].destroy();
           this[kParser] = null;
@@ -20956,14 +20956,14 @@ var require_websocket = __commonJS({
         const webSocketOptions = this[kController]?.dispatcher?.webSocketOptions;
         const maxFragments = webSocketOptions?.maxFragments;
         const maxPayloadSize = webSocketOptions?.maxPayloadSize;
-        const parser2 = new ByteParser(this, parsedExtensions, {
+        const parser3 = new ByteParser(this, parsedExtensions, {
           maxFragments,
           maxPayloadSize
         });
-        parser2.on("drain", onParserDrain);
-        parser2.on("error", onParserError.bind(this));
+        parser3.on("drain", onParserDrain);
+        parser3.on("error", onParserError.bind(this));
         response.socket.ws = this;
-        this[kByteParser] = parser2;
+        this[kByteParser] = parser3;
         this.#sendQueue = new SendQueue(response.socket);
         this[kReadyState] = states.OPEN;
         const extensions = response.headersList.get("sec-websocket-extensions");
@@ -27322,9 +27322,67 @@ function listCommitStatuses(args) {
     { owner: args.owner, repo: args.repo, ref: args.ref, per_page: 100 }
   );
 }
+function getReleaseAsset(args) {
+  return args.octokit.rest.repos.getReleaseAsset({
+    owner: args.owner,
+    repo: args.repo,
+    asset_id: args.assetId,
+    headers: { accept: "application/octet-stream" }
+  });
+}
+
+// src/prepare-release/attempt.ts
+var attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
+var attemptAssetName = "gxmmx-release-attempt.json";
+var parser = new CommitParser();
+function parseAttempt(body) {
+  if (!body) return null;
+  const start = body.indexOf(attemptMarker);
+  if (start < 0) return null;
+  const json = body.slice(start + attemptMarker.length).trim().split("\n")[0];
+  try {
+    const value = JSON.parse(json);
+    return value.schema_version === 1 && value.attempt_id ? value : null;
+  } catch {
+    return null;
+  }
+}
+function parseAttemptJson(value) {
+  try {
+    const record = JSON.parse(value);
+    return record.schema_version === 1 && record.attempt_id ? record : null;
+  } catch {
+    return null;
+  }
+}
+async function readAttemptRecord(args) {
+  const { octokit, owner, repo, release } = args;
+  const asset = release.assets?.find((item) => item.name === attemptAssetName);
+  const bodyRecord = parseAttempt(release.body);
+  if (release.body?.includes(attemptMarker) && !bodyRecord) {
+    throw new Error("Release body contains an invalid attempt record");
+  }
+  if (!asset) return bodyRecord;
+  const downloaded = await getReleaseAsset({
+    octokit,
+    owner,
+    repo,
+    assetId: asset.id
+  });
+  const data = downloaded.data;
+  const bytes = typeof data === "string" ? Buffer.from(data) : data instanceof ArrayBuffer ? Buffer.from(new Uint8Array(data)) : Buffer.from(data);
+  const record = parseAttemptJson(bytes.toString("utf8"));
+  if (!record) throw new Error(`Release asset ${attemptAssetName} is invalid`);
+  if (bodyRecord && JSON.stringify(bodyRecord) !== JSON.stringify(record)) {
+    throw new Error(
+      `Release body and ${attemptAssetName} contain conflicting attempt data`
+    );
+  }
+  return record;
+}
 
 // src/get-next-version/index.ts
-var parser = new CommitParser({
+var parser2 = new CommitParser({
   headerPattern: /^([A-Za-z][A-Za-z0-9-]*)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
   headerCorrespondence: ["type", "scope", "breaking", "subject"]
 });
@@ -27341,7 +27399,7 @@ function stronger(left, right) {
 function bumpForMessage(message) {
   const candidateLines = message.split(/\r?\n/).map((line) => line.trim().replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "")).filter((line) => line.length > 0);
   let bump = "none";
-  const wholeMessage = parser.parse(message);
+  const wholeMessage = parser2.parse(message);
   if (wholeMessage.header && malformedConventionalHeader.test(wholeMessage.header)) {
     if (!wholeMessage.type || !wholeMessage.subject) {
       throw new Error(
@@ -27352,7 +27410,7 @@ function bumpForMessage(message) {
   if (wholeMessage.notes.length > 0) bump = "major";
   for (const line of candidateLines) {
     const looksConventional = malformedConventionalHeader.test(line);
-    const parsed = parser.parse(line);
+    const parsed = parser2.parse(line);
     if (looksConventional && (!parsed.type || !parsed.subject)) {
       throw new Error(`Malformed Conventional Commit message: ${line}`);
     }
@@ -27450,8 +27508,7 @@ async function pushIsSuppressed(args) {
   );
   return matching.length === 1 && matching[0].labels?.some((label) => label.name === args.noReleaseLabel) === true;
 }
-function recordedPlanForSource(args) {
-  const marker = "<!-- gxmmx-release-attempt:v1 -->";
+async function recordedPlanForSource(args) {
   const configuration = {
     stable_branch: args.configuration.stableBranch,
     alpha_branch: args.configuration.alphaBranch,
@@ -27459,23 +27516,30 @@ function recordedPlanForSource(args) {
     rc_branch: args.configuration.rcBranch,
     version_format: args.configuration.versionFormat
   };
+  let recordedPlan = null;
   for (const release of args.releases) {
-    const markerIndex = release.body?.indexOf(marker) ?? -1;
-    if (markerIndex < 0) continue;
-    const json = release.body.slice(markerIndex + marker.length).trim().split("\n")[0];
-    let record;
-    try {
-      record = JSON.parse(json);
-    } catch {
-      continue;
-    }
+    const record = await readAttemptRecord({
+      octokit: args.octokit,
+      owner: args.owner,
+      repo: args.repo,
+      release
+    });
+    if (!record) continue;
+    if (record.source_sha !== args.sourceSha) continue;
     const plan = record.plan;
-    if (record.schema_version !== 1 || record.source_sha !== args.sourceSha || record.tag !== release.tag_name || plan?.schema_version !== 1 || plan.repository?.owner !== context2.repo.owner || plan.repository?.name !== context2.repo.repo || plan.source?.event !== "push" || plan.source?.sha !== args.sourceSha || plan.source?.target_branch !== args.targetBranch || plan.source?.pull_request !== null || JSON.stringify(plan.configuration) !== JSON.stringify(configuration) || plan.decision?.channel !== args.channel || plan.decision?.reason !== "release" || plan.decision?.release_required !== true || !plan.versions?.next_release_tag || plan.versions.next_release_tag !== record.tag || !plan.versions?.next_release_version) {
-      continue;
+    if (record.tag !== release.tag_name || record.version !== plan?.versions?.next_release_version || record.attempt_id !== `${record.tag.replace(/[^A-Za-z0-9.-]/g, "-")}@${args.sourceSha.slice(0, 12)}` || plan?.schema_version !== 1 || plan.repository?.owner !== context2.repo.owner || plan.repository?.name !== context2.repo.repo || plan.source?.event !== "push" || plan.source?.sha !== args.sourceSha || plan.source?.target_branch !== args.targetBranch || plan.source?.pull_request !== null || JSON.stringify(plan.configuration) !== JSON.stringify(configuration) || plan.decision?.channel !== args.channel || plan.decision?.reason !== "release" || plan.decision?.release_required !== true || !plan.versions?.next_release_tag || plan.versions.next_release_tag !== record.tag || !plan.versions?.next_release_version) {
+      throw new Error(
+        `Release attempt for source SHA ${args.sourceSha} has conflicting attempt metadata`
+      );
     }
-    return plan;
+    if (recordedPlan && JSON.stringify(recordedPlan) !== JSON.stringify(plan)) {
+      throw new Error(
+        `Multiple conflicting release attempts exist for source SHA ${args.sourceSha}`
+      );
+    }
+    recordedPlan = plan;
   }
-  return null;
+  return recordedPlan;
 }
 async function main() {
   const context3 = context2;
@@ -27550,7 +27614,10 @@ async function main() {
     listRepositoryTags({ octokit, owner, repo: name })
   ]);
   if (context3.eventName === "push") {
-    const recordedPlan = recordedPlanForSource({
+    const recordedPlan = await recordedPlanForSource({
+      octokit,
+      owner,
+      repo: name,
       releases,
       sourceSha,
       targetBranch,
@@ -27635,7 +27702,7 @@ async function main() {
   for (const commit of unreleasedCommits) {
     bump = stronger(bump, bumpForMessage(commit.commit.message));
   }
-  let nextStableVersion = bump === "none" ? null : nextVersion(stableBase, bump);
+  let nextStableVersion = bump === "none" ? null : baseline ? nextVersion(stableBase, bump) : channel === "stable" ? "0.1.0" : nextVersion(stableBase, bump);
   let releaseRequired = !preview && bump !== "none";
   let reason = preview ? "preview" : bump === "none" ? "no-changes" : "release";
   let nextReleaseVersion = null;

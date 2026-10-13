@@ -33,6 +33,7 @@ import {
   listRepositoryTags,
   type GitHubClient,
 } from "../github/operations.js";
+import { readAttemptRecord } from "../prepare-release/attempt.js";
 
 type Bump = "none" | "patch" | "minor" | "major";
 type Reason =
@@ -75,10 +76,12 @@ interface ReleasePlan {
 }
 
 interface StableRelease {
+  id: number;
   tag_name: string;
   prerelease: boolean;
   draft: boolean;
   body?: string | null;
+  assets?: Array<{ id: number; name: string }>;
 }
 
 interface RepositoryTag {
@@ -288,14 +291,16 @@ async function pushIsSuppressed(args: {
   );
 }
 
-function recordedPlanForSource(args: {
+async function recordedPlanForSource(args: {
+  octokit: GitHubClient;
+  owner: string;
+  repo: string;
   releases: StableRelease[];
   sourceSha: string;
   targetBranch: string;
   configuration: ChannelConfiguration;
   channel: ReleaseChannel;
-}): ReleasePlan | null {
-  const marker = "<!-- gxmmx-release-attempt:v1 -->";
+}): Promise<ReleasePlan | null> {
   const configuration = {
     stable_branch: args.configuration.stableBranch,
     alpha_branch: args.configuration.alphaBranch,
@@ -304,29 +309,22 @@ function recordedPlanForSource(args: {
     version_format: args.configuration.versionFormat,
   };
 
+  let recordedPlan: ReleasePlan | null = null;
   for (const release of args.releases) {
-    const markerIndex = release.body?.indexOf(marker) ?? -1;
-    if (markerIndex < 0) continue;
-    const json = release
-      .body!.slice(markerIndex + marker.length)
-      .trim()
-      .split("\n")[0];
-    let record: {
-      schema_version?: number;
-      tag?: string;
-      source_sha?: string;
-      plan?: ReleasePlan;
-    };
-    try {
-      record = JSON.parse(json);
-    } catch {
-      continue;
-    }
+    const record = await readAttemptRecord({
+      octokit: args.octokit,
+      owner: args.owner,
+      repo: args.repo,
+      release,
+    });
+    if (!record) continue;
+    if (record.source_sha !== args.sourceSha) continue;
     const plan = record.plan;
     if (
-      record.schema_version !== 1 ||
-      record.source_sha !== args.sourceSha ||
       record.tag !== release.tag_name ||
+      record.version !== plan?.versions?.next_release_version ||
+      record.attempt_id !==
+        `${record.tag.replace(/[^A-Za-z0-9.-]/g, "-")}@${args.sourceSha.slice(0, 12)}` ||
       plan?.schema_version !== 1 ||
       plan.repository?.owner !== github.context.repo.owner ||
       plan.repository?.name !== github.context.repo.repo ||
@@ -342,11 +340,18 @@ function recordedPlanForSource(args: {
       plan.versions.next_release_tag !== record.tag ||
       !plan.versions?.next_release_version
     ) {
-      continue;
+      throw new Error(
+        `Release attempt for source SHA ${args.sourceSha} has conflicting attempt metadata`,
+      );
     }
-    return plan;
+    if (recordedPlan && JSON.stringify(recordedPlan) !== JSON.stringify(plan)) {
+      throw new Error(
+        `Multiple conflicting release attempts exist for source SHA ${args.sourceSha}`,
+      );
+    }
+    recordedPlan = plan;
   }
-  return null;
+  return recordedPlan;
 }
 
 async function main(): Promise<void> {
@@ -428,7 +433,10 @@ async function main(): Promise<void> {
     listRepositoryTags({ octokit, owner, repo: name }),
   ]);
   if (context.eventName === "push") {
-    const recordedPlan = recordedPlanForSource({
+    const recordedPlan = await recordedPlanForSource({
+      octokit,
+      owner,
+      repo: name,
       releases: releases as StableRelease[],
       sourceSha,
       targetBranch,
@@ -543,7 +551,13 @@ async function main(): Promise<void> {
   }
 
   let nextStableVersion =
-    bump === "none" ? null : nextVersion(stableBase, bump);
+    bump === "none"
+      ? null
+      : baseline
+        ? nextVersion(stableBase, bump)
+        : channel === "stable"
+          ? "0.1.0"
+          : nextVersion(stableBase, bump);
   let releaseRequired = !preview && bump !== "none";
   let reason: Reason = preview
     ? "preview"

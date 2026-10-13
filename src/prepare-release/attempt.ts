@@ -2,6 +2,7 @@ import { CommitParser } from "conventional-commits-parser";
 import {
   createGitRef,
   createRelease,
+  getReleaseAsset,
   getGitRef,
   listRepositoryReleases,
   type GitHubClient,
@@ -79,6 +80,7 @@ export interface AttemptRecord {
 }
 
 export const attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
+export const attemptAssetName = "gxmmx-release-attempt.json";
 const parser = new CommitParser();
 
 function attemptId(tag: string, sha: string): string {
@@ -101,6 +103,56 @@ export function parseAttempt(
   } catch {
     return null;
   }
+}
+
+export function parseAttemptJson(value: string): AttemptRecord | null {
+  try {
+    const record = JSON.parse(value) as AttemptRecord;
+    return record.schema_version === 1 && record.attempt_id ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function readAttemptRecord(args: {
+  octokit: GitHubClient;
+  owner: string;
+  repo: string;
+  release: {
+    id: number;
+    body?: string | null;
+    assets?: Array<{ id: number; name: string }>;
+  };
+}): Promise<AttemptRecord | null> {
+  const { octokit, owner, repo, release } = args;
+  const asset = release.assets?.find((item) => item.name === attemptAssetName);
+  const bodyRecord = parseAttempt(release.body);
+  if (release.body?.includes(attemptMarker) && !bodyRecord) {
+    throw new Error("Release body contains an invalid attempt record");
+  }
+  if (!asset) return bodyRecord;
+
+  const downloaded = await getReleaseAsset({
+    octokit,
+    owner,
+    repo,
+    assetId: asset.id,
+  });
+  const data = downloaded.data as unknown;
+  const bytes =
+    typeof data === "string"
+      ? Buffer.from(data)
+      : data instanceof ArrayBuffer
+        ? Buffer.from(new Uint8Array(data))
+        : Buffer.from(data as Uint8Array);
+  const record = parseAttemptJson(bytes.toString("utf8"));
+  if (!record) throw new Error(`Release asset ${attemptAssetName} is invalid`);
+  if (bodyRecord && JSON.stringify(bodyRecord) !== JSON.stringify(record)) {
+    throw new Error(
+      `Release body and ${attemptAssetName} contain conflicting attempt data`,
+    );
+  }
+  return record;
 }
 
 export function serializeAttemptBody(
@@ -255,7 +307,12 @@ export async function establishAttempt(args: {
   }
   if (published.length === 1) {
     const release = published[0];
-    const record = parseAttempt(release.body);
+    const record = await readAttemptRecord({
+      octokit,
+      owner,
+      repo,
+      release,
+    });
     if (
       !record ||
       record.attempt_id !== id ||
@@ -289,7 +346,12 @@ export async function establishAttempt(args: {
   }
   if (existingDrafts.length === 1) {
     const release = existingDrafts[0];
-    const record = parseAttempt(release.body);
+    const record = await readAttemptRecord({
+      octokit,
+      owner,
+      repo,
+      release,
+    });
     if (record?.abandoned) {
       throw new Error(
         `Release attempt ${record.attempt_id} was abandoned: ${record.abandoned.reason}`,

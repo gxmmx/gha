@@ -1,1 +1,23 @@
+## OS
+.DS_Store
+Thumbs.db
+
+## Node
 node_modules/
+
+## mise
+# Local overrides and their local lockfiles are machine-specific.
+mise.local.toml
+mise.*.local.toml
+.mise.local.toml
+.mise.*.local.toml
+mise.local.lock
+mise.*.local.lock
+.mise.local.lock
+.mise.*.local.lock
+.mise/locks/mise.local/
+.mise/locks/mise.*.local/
+
+# Localized mise setups can put installs and cache data in the repository.
+.mise/installs/
+.mise/cache/

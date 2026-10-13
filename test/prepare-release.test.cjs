@@ -43,6 +43,7 @@ async function runPreparation({
   configuredStableBranch = "main",
   configuredBetaBranch = "",
   noReleaseLabel = "no-release",
+  versionFormat = "semver",
   eventName = "pull_request",
   ref = "refs/pull/42/merge",
   pushedSha = "9999999999999999999999999999999999999999",
@@ -84,7 +85,7 @@ async function runPreparation({
       alpha_branch: null,
       beta_branch: configuredBetaBranch || null,
       rc_branch: null,
-      version_format: "semver",
+      version_format: versionFormat,
     },
     history: {
       stable_base_version: "0.1.0",
@@ -285,6 +286,7 @@ async function runPreparation({
           INPUT_STABLE_BRANCH: configuredStableBranch,
           INPUT_BETA_BRANCH: configuredBetaBranch,
           INPUT_NO_RELEASE_LABEL: noReleaseLabel,
+          INPUT_VERSION_FORMAT: versionFormat,
           INPUT_RELEASE_PLAN: JSON.stringify(sourcePlan),
         },
       });
@@ -347,6 +349,81 @@ test("release-branch push snapshots the merged PR decision on the exact squash S
   assert.equal(result.createdDraft.draft, true);
   assert.match(result.createdDraft.body, /## Features/);
   assert.match(result.createdDraft.body, /gxmmx-release-attempt:v1/);
+});
+
+test("candidate preparation accepts a PEP 440 release plan", async () => {
+  const sha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  const releasePlan = {
+    schema_version: 1,
+    repository: { owner: "gxmmx", name: "testproject" },
+    source: {
+      event: "push",
+      run_id: 1234567,
+      sha,
+      target_branch: "beta",
+      pull_request: null,
+    },
+    configuration: {
+      stable_branch: "main",
+      alpha_branch: null,
+      beta_branch: "beta",
+      rc_branch: null,
+      version_format: "pep440",
+    },
+    history: {
+      stable_base_version: "0.1.0",
+      stable_release_tag: "v0.1.0",
+      stable_release_sha: "0000000000000000000000000000000000000000",
+    },
+    decision: {
+      channel: "beta",
+      bump: "minor",
+      reason: "release",
+      release_required: true,
+    },
+    versions: {
+      build_version: "0.2.0b1",
+      next_stable_version: "0.2.0",
+      next_release_version: "0.2.0b1",
+      next_release_tag: "v0.2.0-beta.1",
+    },
+  };
+  const result = await runPreparation({
+    eventName: "push",
+    ref: "refs/heads/beta",
+    base: "beta",
+    configuredBetaBranch: "beta",
+    versionFormat: "pep440",
+    pushedSha: sha,
+    releasePlan,
+    historyEntries: [
+      { sha, commit: { message: "feat(api): add endpoint" } },
+      {
+        sha: "0000000000000000000000000000000000000000",
+        commit: { message: "chore: previous stable baseline" },
+      },
+    ],
+    associatedPulls: [
+      {
+        number: 42,
+        merged_at: "2026-10-13T12:00:00Z",
+        merge_commit_sha: sha,
+        base: { ref: "beta" },
+      },
+    ],
+    commits: ["feat(api): add endpoint"],
+  });
+  assert.ifError(
+    result.error &&
+      new Error(
+        `${errorText(result.error)}\n${JSON.stringify(result.requests)}`,
+      ),
+  );
+  assert.equal(result.values.release_required, "true");
+  assert.equal(result.values.channel, "beta");
+  assert.equal(result.values.attempt_id, `v0.2.0-beta.1@${sha.slice(0, 12)}`);
+  assert.equal(result.createdDraft.tag_name, "v0.2.0-beta.1");
+  assert.equal(result.createdDraft.name, "v0.2.0b1");
 });
 
 test("release-branch retry reuses the matching published attempt", async () => {

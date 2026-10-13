@@ -622,7 +622,7 @@ async function main(): Promise<void> {
     alphaBranchInput: core.getInput("alpha_branch"),
     betaBranchInput: core.getInput("beta_branch"),
     rcBranchInput: core.getInput("rc_branch"),
-    versionFormatInput: "semver",
+    versionFormatInput: core.getInput("version_format"),
   });
   if (context.eventName === "push") {
     const targetBranch = context.ref.replace(/^refs\/heads\//, "");

@@ -78,6 +78,7 @@ fail before builds. Ordinary non-conventional messages are neutral.
 | `alpha_branch`     | No       | Alpha branch; empty disables the channel                                   |
 | `beta_branch`      | No       | Beta branch; empty disables the channel                                    |
 | `rc_branch`        | No       | RC branch; empty disables the channel                                      |
+| `version_format`   | No       | `semver` (default) or `pep440`; must match the planner                     |
 | `require_release`  | No       | Require release signal on stable PRs; defaults to `true`                   |
 | `no_release_label` | No       | Suppression label; defaults to `no-release`                                |
 | `release_plan`     | Push     | Unmodified planner output for the same push; required for release attempts |

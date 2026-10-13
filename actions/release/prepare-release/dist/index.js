@@ -27308,7 +27308,9 @@ async function establishAttempt(args) {
       { ...record2.plan, attempt_id: void 0 },
       { ...plan, attempt_id: void 0 }
     )) {
-      throw new Error(`Published release ${tag} belongs to a different source or plan`);
+      throw new Error(
+        `Published release ${tag} belongs to a different source or plan`
+      );
     }
     await ensureTagClaim({
       octokit,
@@ -27896,7 +27898,7 @@ async function main() {
     alphaBranchInput: core.getInput("alpha_branch"),
     betaBranchInput: core.getInput("beta_branch"),
     rcBranchInput: core.getInput("rc_branch"),
-    versionFormatInput: "semver"
+    versionFormatInput: core.getInput("version_format")
   });
   if (context3.eventName === "push") {
     const targetBranch2 = context3.ref.replace(/^refs\/heads\//, "");

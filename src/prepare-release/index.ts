@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
+import { establishAttempt, type ReleasePlan } from "./attempt.js";
 import { CommitParser } from "conventional-commits-parser";
 import {
   channelForBranch,
@@ -140,6 +141,10 @@ function setOutputs(values: {
   pullRequest: number;
   decisionSha?: string;
   decisionContext?: string;
+  attemptId?: string;
+  releaseId?: number;
+  releaseNotes?: string;
+  releasePlan?: ReleasePlan;
 }): void {
   core.setOutput("prepared", String(values.prepared));
   core.setOutput("reason", values.reason);
@@ -152,6 +157,13 @@ function setOutputs(values: {
   core.setOutput("pull_request", String(values.pullRequest));
   core.setOutput("decision_sha", values.decisionSha ?? "");
   core.setOutput("decision_context", values.decisionContext ?? "");
+  core.setOutput("attempt_id", values.attemptId ?? "");
+  core.setOutput("draft_release_id", values.releaseId?.toString() ?? "");
+  core.setOutput("release_notes", values.releaseNotes ?? "");
+  core.setOutput(
+    "release_plan",
+    values.releasePlan ? JSON.stringify(values.releasePlan) : "",
+  );
 }
 
 function decisionContext(channel: Channel): string {
@@ -181,6 +193,7 @@ async function preparePush(args: {
   targetBranch: string;
   channel: Channel | null;
   noReleaseLabel: string;
+  configuration: ReturnType<typeof resolveChannelConfiguration>;
 }): Promise<void> {
   const { context, octokit, owner, repo, targetBranch, channel } = args;
   if (channel === null) {
@@ -239,13 +252,16 @@ async function preparePush(args: {
     },
   )) as CommitStatus[];
   const existing = statuses.find((status) => status.context === contextName);
+  let recorded: ReturnType<typeof parseDecision> | null = null;
   if (existing) {
     if (existing.state !== "success") {
       throw new Error(
         `Recorded release decision status ${contextName} is not successful`,
       );
     }
-    const recorded = parseDecision(existing.description);
+    recorded = parseDecision(existing.description);
+  }
+  if (recorded && recorded.reason !== "release") {
     setOutputs({
       prepared: true,
       reason: recorded.reason,
@@ -253,7 +269,7 @@ async function preparePush(args: {
       titleUpdated: false,
       bump: recorded.reason === "suppressed" ? "none" : recorded.bump,
       channel,
-      releaseRequired: recorded.reason === "release",
+      releaseRequired: false,
       pullRequest: pullRequest.number,
       decisionSha: sourceSha,
       decisionContext: contextName,
@@ -275,50 +291,152 @@ async function preparePush(args: {
       "Associated pull request no longer matches the pushed squash commit",
     );
   }
-  const commits = (await octokit.paginate(octokit.rest.pulls.listCommits, {
-    owner,
-    repo,
-    pull_number: pullRequest.number,
-    per_page: 100,
-  })) as PullRequestCommit[];
-  if (commits.length === 0 || commits.length >= 250) {
-    throw new Error(
-      "Pull request commit history is empty, incomplete, or truncated",
-    );
-  }
-  const messages = commits.map((commit) => {
-    if (!commit.sha || typeof commit.commit?.message !== "string") {
-      throw new Error("Pull request commit history is incomplete");
+  let reason = recorded?.reason;
+  let bump = recorded?.bump;
+  let messages: string[] = [];
+  if (!recorded) {
+    const commits = (await octokit.paginate(octokit.rest.pulls.listCommits, {
+      owner,
+      repo,
+      pull_number: pullRequest.number,
+      per_page: 100,
+    })) as PullRequestCommit[];
+    if (commits.length === 0 || commits.length >= 250) {
+      throw new Error(
+        "Pull request commit history is empty, incomplete, or truncated",
+      );
     }
-    return commit.commit.message;
-  });
-  const signal = strongestSignal(messages);
-  const suppressed = pull.data.labels.some(
-    (item) => item.name === args.noReleaseLabel,
-  );
-  const reason = suppressed
-    ? "suppressed"
-    : signal.bump === "none"
-      ? "no-changes"
-      : "release";
-  const bump = reason === "suppressed" ? "none" : signal.bump;
-  const description = `v1;reason=${reason};bump=${bump}`;
-  await octokit.rest.repos.createCommitStatus({
-    owner,
-    repo,
-    sha: sourceSha,
-    state: "success",
-    context: contextName,
-    description,
-  });
+    messages = commits.map((commit) => {
+      if (!commit.sha || typeof commit.commit?.message !== "string") {
+        throw new Error("Pull request commit history is incomplete");
+      }
+      return commit.commit.message;
+    });
+    const signal = strongestSignal(messages);
+    const suppressed = pull.data.labels.some(
+      (item) => item.name === args.noReleaseLabel,
+    );
+    reason = suppressed
+      ? "suppressed"
+      : signal.bump === "none"
+        ? "no-changes"
+        : "release";
+    bump = reason === "suppressed" ? "none" : signal.bump;
+    await octokit.rest.repos.createCommitStatus({
+      owner,
+      repo,
+      sha: sourceSha,
+      state: "success",
+      context: contextName,
+      description: `v1;reason=${reason};bump=${bump}`,
+    });
+  }
+  if (reason === "release") {
+    const planText = core.getInput("release_plan", { required: true });
+    let plan: ReleasePlan;
+    try {
+      plan = JSON.parse(planText) as ReleasePlan;
+    } catch {
+      throw new Error("release_plan must be valid JSON from get-next-version");
+    }
+    const expected = {
+      owner,
+      name: repo,
+      event: context.eventName,
+      run_id: context.runId,
+      sha: sourceSha,
+      target_branch: targetBranch,
+      pull_request: null,
+      configuration: {
+        stable_branch: args.configuration.stableBranch,
+        alpha_branch: args.configuration.alphaBranch,
+        beta_branch: args.configuration.betaBranch,
+        rc_branch: args.configuration.rcBranch,
+        version_format: args.configuration.versionFormat,
+      },
+    };
+    if (
+      plan?.schema_version !== 1 ||
+      plan.repository?.owner !== expected.owner ||
+      plan.repository?.name !== expected.name ||
+      plan.source?.event !== expected.event ||
+      plan.source?.run_id !== expected.run_id ||
+      plan.source?.sha !== expected.sha ||
+      plan.source?.target_branch !== expected.target_branch ||
+      plan.source?.pull_request !== expected.pull_request ||
+      JSON.stringify(plan.configuration) !==
+        JSON.stringify(expected.configuration) ||
+      plan.decision?.channel !== channel ||
+      plan.decision?.reason !== "release" ||
+      plan.decision?.release_required !== true ||
+      plan.decision?.bump !== bump ||
+      !plan.versions?.next_release_tag ||
+      !plan.versions?.next_release_version
+    ) {
+      throw new Error(
+        "release_plan is stale or does not match the pushed release decision; run get-next-version again",
+      );
+    }
+    const history = (await octokit.paginate(octokit.rest.repos.listCommits, {
+      owner,
+      repo,
+      sha: sourceSha,
+      per_page: 100,
+    })) as Array<{ sha: string; commit: { message: string } }>;
+    if (
+      !history.length ||
+      !history.every(
+        (entry) => entry.sha && typeof entry.commit?.message === "string",
+      )
+    ) {
+      throw new Error("Release history is incomplete");
+    }
+    const baseline = plan.history.stable_release_sha;
+    const baselineIndex = baseline
+      ? history.findIndex((entry) => entry.sha === baseline)
+      : -1;
+    if (baseline && baselineIndex < 0)
+      throw new Error(
+        "release_plan stable baseline is stale; run get-next-version again",
+      );
+    messages = history
+      .slice(0, baselineIndex < 0 ? history.length : baselineIndex)
+      .map((entry) => entry.commit.message);
+    const attempt = await establishAttempt({
+      octokit,
+      owner,
+      repo,
+      plan,
+      messages,
+      pullRequestBody: pull.data.body,
+      targetBranch,
+    });
+    setOutputs({
+      prepared: true,
+      reason,
+      title: "",
+      titleUpdated: false,
+      bump: bump!,
+      channel,
+      releaseRequired: true,
+      pullRequest: pullRequest.number,
+      decisionSha: sourceSha,
+      decisionContext: contextName,
+      attemptId: attempt.attemptId,
+      releaseId: attempt.releaseId,
+      releaseNotes: attempt.notes,
+      releasePlan: attempt.plan,
+    });
+    return;
+  }
   setOutputs({
     prepared: true,
-    reason,
+    reason: reason!,
     title: "",
     titleUpdated: false,
-    bump,
+    bump: bump!,
     channel,
-    releaseRequired: reason === "release",
+    releaseRequired: false,
     pullRequest: pullRequest.number,
     decisionSha: sourceSha,
     decisionContext: contextName,
@@ -350,6 +468,7 @@ async function main(): Promise<void> {
       targetBranch,
       channel,
       noReleaseLabel: core.getInput("no_release_label") || "no-release",
+      configuration,
     });
     return;
   }

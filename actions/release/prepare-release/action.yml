@@ -1,8 +1,8 @@
 name: Prepare release
-description: Validate pull request release intent and snapshot merged release-branch decisions.
+description: Validate pull requests and establish durable drafts for merged release commits.
 inputs:
   github_token:
-    description: Token used to read pull request history and update its title when permitted.
+    description: Token used for pull request validation, release decisions, tag claims, and draft creation.
     required: true
   stable_branch:
     description: Stable release branch. Defaults to the repository default branch.
@@ -24,6 +24,9 @@ inputs:
     description: Label that permits a no-bump PR and suppresses publication. Defaults to no-release.
     required: false
     default: no-release
+  release_plan:
+    description: Unmodified release_plan output from get-next-version for this push.
+    required: false
 outputs:
   prepared:
     description: Whether preparation ran for a configured release branch.
@@ -47,6 +50,14 @@ outputs:
     description: Exact pushed squash commit whose channel decision was recorded; empty for PR runs.
   decision_context:
     description: Channel-specific commit status context used for a pushed release decision.
+  attempt_id:
+    description: Stable identity of the retained draft attempt.
+  draft_release_id:
+    description: GitHub release ID of the draft attempt.
+  release_notes:
+    description: Notes snapshotted when the draft attempt was created.
+  release_plan:
+    description: Authoritative release plan with attempt_id attached.
 runs:
   using: node24
   main: dist/index.js

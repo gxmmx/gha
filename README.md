@@ -6,7 +6,7 @@ Reusable GitHub Actions and workflows, organized by purpose.
 
 | Component                                                      | Group   | Purpose                                                             |
 | -------------------------------------------------------------- | ------- | ------------------------------------------------------------------- |
-| [Get next version](actions/release/get-next-version/README.md)   | Release | Plan a stable or prerelease version without writing to GitHub.      |
+| [Get next version](actions/release/get-next-version/README.md) | Release | Plan a stable or prerelease version without writing to GitHub.      |
 | [Prepare release](actions/release/prepare-release/README.md)   | Release | Validate a release decision, claim its version, and create a draft. |
 | [Stage release assets](actions/release/stage-assets/README.md) | Release | Validate and attach project files to a draft release.               |
 | [Publish release](actions/release/publish/README.md)           | Release | Record artifact references and publish a prepared release.          |

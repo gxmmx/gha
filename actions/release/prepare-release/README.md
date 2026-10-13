@@ -46,7 +46,7 @@ permissions:
 
 steps:
   - id: plan
-    uses: gxmmx/gha/actions/get-next-version@main
+    uses: gxmmx/gha/actions/release/get-next-version@main
     with:
       github_token: ${{ github.token }}
   - id: prepare

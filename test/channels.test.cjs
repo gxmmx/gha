@@ -7,7 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 const { promisify } = require("node:util");
 
-const action = path.resolve("actions/get-next-version/dist/index.js");
+const action = path.resolve("actions/release/get-next-version/dist/index.js");
 const execFileAsync = promisify(execFile);
 const sourceSha = "1234567890abcdef1234567890abcdef12345678";
 const stableSha = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";

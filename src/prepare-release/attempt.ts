@@ -38,28 +38,43 @@ export interface ReleasePlan {
   attempt_id?: string;
 }
 
-interface AttemptRecord {
+export interface StagedAsset {
+  name: string;
+  size: number;
+  sha256: string;
+}
+
+export interface AssetManifest {
+  schema_version: 1;
+  assets: StagedAsset[];
+  checksum_asset: StagedAsset | null;
+}
+
+export interface AttemptRecord {
   schema_version: 1;
   attempt_id: string;
   tag: string;
   version: string;
   source_sha: string;
   plan: ReleasePlan;
+  asset_manifest?: AssetManifest;
 }
 
-const marker = "<!-- gxmmx-release-attempt:v1 -->";
+export const attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
 const parser = new CommitParser();
 
 function attemptId(tag: string, sha: string): string {
   return `${tag.replace(/[^A-Za-z0-9.-]/g, "-")}@${sha.slice(0, 12)}`;
 }
 
-function parseAttempt(body: string | null | undefined): AttemptRecord | null {
+export function parseAttempt(
+  body: string | null | undefined,
+): AttemptRecord | null {
   if (!body) return null;
-  const start = body.indexOf(marker);
+  const start = body.indexOf(attemptMarker);
   if (start < 0) return null;
   const json = body
-    .slice(start + marker.length)
+    .slice(start + attemptMarker.length)
     .trim()
     .split("\n")[0];
   try {
@@ -68,6 +83,14 @@ function parseAttempt(body: string | null | undefined): AttemptRecord | null {
   } catch {
     return null;
   }
+}
+
+export function serializeAttemptBody(
+  body: string | null | undefined,
+  record: AttemptRecord,
+): string {
+  const notes = (body ?? "").split(attemptMarker)[0].trim();
+  return `${notes}\n\n${attemptMarker}\n${JSON.stringify(record)}`;
 }
 
 function releaseNotes(messages: string[], prBody: string | null): string {
@@ -239,7 +262,7 @@ export async function establishAttempt(args: {
     });
     return {
       plan: { ...plan, attempt_id: record.attempt_id },
-      notes: (release.body ?? "").split(marker)[0].trim(),
+      notes: (release.body ?? "").split(attemptMarker)[0].trim(),
       attemptId: record.attempt_id,
       releaseId: release.id,
     };
@@ -261,7 +284,7 @@ export async function establishAttempt(args: {
     source_sha: plan.source.sha,
     plan: { ...plan, attempt_id: id },
   };
-  const body = `${notes}\n\n${marker}\n${JSON.stringify(record)}`;
+  const body = serializeAttemptBody(notes, record);
   const created = await octokit.rest.repos.createRelease({
     owner,
     repo,

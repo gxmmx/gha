@@ -27161,22 +27161,29 @@ var CommitParser = class {
 };
 
 // src/prepare-release/attempt.ts
-var marker = "<!-- gxmmx-release-attempt:v1 -->";
+var attemptMarker = "<!-- gxmmx-release-attempt:v1 -->";
 var parser = new CommitParser();
 function attemptId(tag, sha) {
   return `${tag.replace(/[^A-Za-z0-9.-]/g, "-")}@${sha.slice(0, 12)}`;
 }
 function parseAttempt(body) {
   if (!body) return null;
-  const start = body.indexOf(marker);
+  const start = body.indexOf(attemptMarker);
   if (start < 0) return null;
-  const json = body.slice(start + marker.length).trim().split("\n")[0];
+  const json = body.slice(start + attemptMarker.length).trim().split("\n")[0];
   try {
     const value = JSON.parse(json);
     return value.schema_version === 1 && value.attempt_id ? value : null;
   } catch {
     return null;
   }
+}
+function serializeAttemptBody(body, record) {
+  const notes = (body ?? "").split(attemptMarker)[0].trim();
+  return `${notes}
+
+${attemptMarker}
+${JSON.stringify(record)}`;
 }
 function releaseNotes(messages, prBody) {
   const groups = {
@@ -27316,7 +27323,7 @@ async function establishAttempt(args) {
     });
     return {
       plan: { ...plan, attempt_id: record2.attempt_id },
-      notes: (release.body ?? "").split(marker)[0].trim(),
+      notes: (release.body ?? "").split(attemptMarker)[0].trim(),
       attemptId: record2.attempt_id,
       releaseId: release.id
     };
@@ -27337,10 +27344,7 @@ async function establishAttempt(args) {
     source_sha: plan.source.sha,
     plan: { ...plan, attempt_id: id }
   };
-  const body = `${notes}
-
-${marker}
-${JSON.stringify(record)}`;
+  const body = serializeAttemptBody(notes, record);
   const created = await octokit.rest.repos.createRelease({
     owner,
     repo,
@@ -27476,8 +27480,8 @@ function normalizeTitle(title, signal) {
   if (!description) {
     throw new Error("Pull request title must include a description");
   }
-  const marker2 = signal.breaking ? "!" : "";
-  return `${signal.titleType}${scope}${marker2}: ${description}`;
+  const marker = signal.breaking ? "!" : "";
+  return `${signal.titleType}${scope}${marker}: ${description}`;
 }
 function setOutputs(values) {
   core.setOutput("prepared", String(values.prepared));

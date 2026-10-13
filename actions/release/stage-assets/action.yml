@@ -1,0 +1,27 @@
+name: Stage release assets
+description: Validate and stage immutable assets and SHA-256 checksums on a draft attempt.
+inputs:
+  github_token:
+    description: Token used to read and update the matching draft release and upload assets.
+    required: true
+  draft_release_id:
+    description: Draft release ID returned by prepare-release.
+    required: true
+  attempt_id:
+    description: Attempt ID returned by prepare-release.
+    required: true
+  assets:
+    description: Optional newline-separated relative file paths or glob patterns; every pattern must match at least one file.
+    required: false
+outputs:
+  staged:
+    description: Whether asset staging completed, including asset-free validation.
+  asset_names:
+    description: JSON array of uploaded asset names, including SHA256SUMS when files were supplied.
+  asset_manifest:
+    description: JSON record of staged file names, byte sizes, and SHA-256 digests.
+  checksum_asset:
+    description: Name of the generated checksum asset, or empty when no assets were supplied.
+runs:
+  using: node24
+  main: dist/index.js

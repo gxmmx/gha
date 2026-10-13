@@ -1,0 +1,48 @@
+name: Prepare release
+description: Validate pull request release intent and normalize its title.
+inputs:
+  github_token:
+    description: Token used to read pull request history and update its title when permitted.
+    required: true
+  stable_branch:
+    description: Stable release branch. Defaults to the repository default branch.
+    required: false
+  alpha_branch:
+    description: Configured alpha release branch; empty disables the channel.
+    required: false
+  beta_branch:
+    description: Configured beta release branch; empty disables the channel.
+    required: false
+  rc_branch:
+    description: Configured RC release branch; empty disables the channel.
+    required: false
+  require_release:
+    description: Require a release-worthy change for stable-target PRs. Defaults to true.
+    required: false
+    default: "true"
+  no_release_label:
+    description: Label that permits a no-bump PR and suppresses publication. Defaults to no-release.
+    required: false
+    default: no-release
+outputs:
+  prepared:
+    description: Whether preparation ran for a configured release branch.
+  reason:
+    description: Preparation result, including unmatched-branch, release, no-changes, or suppressed.
+  title:
+    description: Normalized title derived from the strongest commit signal.
+  title_updated:
+    description: Whether the title is normalized or was successfully updated.
+  title_update_error:
+    description: Explanation when the token cannot write pull request titles.
+  bump:
+    description: Strongest release signal, or none when suppressed.
+  channel:
+    description: Configured release channel, or empty for an unmatched target.
+  release_required:
+    description: Whether the PR contains an unsuppressed release-worthy change.
+  pull_request:
+    description: Pull request number from GitHub event context.
+runs:
+  using: node24
+  main: dist/index.js

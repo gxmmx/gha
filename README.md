@@ -4,14 +4,14 @@ Reusable GitHub Actions and workflows, organized by purpose.
 
 ## Components
 
-| Component | Group | Purpose |
-| --- | --- | --- |
-| [Get next version](actions/get-next-version/README.md) | Release | Plan a stable or prerelease version without writing to GitHub. |
-| [Prepare release](actions/release/prepare-release/README.md) | Release | Validate a release decision, claim its version, and create a draft. |
-| [Stage release assets](actions/release/stage-assets/README.md) | Release | Validate and attach project files to a draft release. |
-| [Publish release](actions/release/publish/README.md) | Release | Record artifact references and publish a prepared release. |
-| [Recover release attempt](actions/release/recover/README.md) | Release | Resume or explicitly abandon an existing release attempt. |
-| [Minimal release workflow](.github/workflows/release.md) | Release | Compose actions for GitHub-only releases. |
+| Component                                                      | Group   | Purpose                                                             |
+| -------------------------------------------------------------- | ------- | ------------------------------------------------------------------- |
+| [Get next version](actions/get-next-version/README.md)         | Release | Plan a stable or prerelease version without writing to GitHub.      |
+| [Prepare release](actions/release/prepare-release/README.md)   | Release | Validate a release decision, claim its version, and create a draft. |
+| [Stage release assets](actions/release/stage-assets/README.md) | Release | Validate and attach project files to a draft release.               |
+| [Publish release](actions/release/publish/README.md)           | Release | Record artifact references and publish a prepared release.          |
+| [Recover release attempt](actions/release/recover/README.md)   | Release | Resume or explicitly abandon an existing release attempt.           |
+| [Minimal release workflow](.github/workflows/release.md)       | Release | Compose actions for GitHub-only releases.                           |
 
 ## Actions
 

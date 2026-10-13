@@ -12,7 +12,7 @@ sibling `testproject` repository and waits for its result. The smoke workflow
 uses the `issue/2-tooling-smoke` gha branch and `issue/2-action-smoke`
 testproject branch, so both branches must be available on GitHub.
 
-See [Get next version](actions/get-next-version/README.md) for the current
+See [Get next version](actions/release/get-next-version/README.md) for the current
 consumer action contract. See [Stage release assets](actions/release/stage-assets/README.md)
 for validating and attaching immutable files to a draft attempt.
 

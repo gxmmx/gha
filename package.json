@@ -7,7 +7,7 @@
     "lint": "prettier --check README.md \"src/**/*.ts\" \"test/**/*.cjs\" \"actions/**/*.yml\" \"actions/**/*.md\" \".github/**/*.yml\" package.json tsconfig.json",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.cjs",
-    "build": "esbuild src/get-next-version/index.ts --bundle --platform=node --target=node24 --outfile=actions/get-next-version/dist/index.js"
+    "build": "esbuild src/get-next-version/index.ts --bundle --platform=node --target=node24 --outfile=actions/get-next-version/dist/index.js && esbuild src/prepare-release/index.ts --bundle --platform=node --target=node24 --outfile=actions/release/prepare-release/dist/index.js"
   },
   "dependencies": {
     "@actions/core": "^1.11.1",

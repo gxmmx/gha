@@ -1,9 +1,9 @@
 # Get next version
 
 This bundled, read-only action resolves the stable branch, reads the exact source
-commit history, and returns a version prediction with a serialized release plan.
-It inspects all commits after the latest reachable stable release. Before
-the first stable release, the base version is `0.1.0`.
+commit history, and returns a stable or candidate version prediction with a
+serialized release plan. It inspects all commits after the latest stable release.
+Before the first stable release, the base version is `0.1.0`.
 
 ## Usage
 
@@ -18,7 +18,6 @@ steps:
     uses: gxmmx/gha/actions/get-next-version@main
     with:
       github_token: ${{ github.token }}
-      version_format: pep440
 
   - run: echo "Build version: $BUILD_VERSION"
     env:
@@ -27,11 +26,10 @@ steps:
 
 `github_token` is required and needs `contents: read`, `pull-requests: read`, and
 `statuses: read`. The planner does not write to GitHub. `stable_branch` is
-optional and defaults to the repository's default branch. `version_format` is
-optional and accepts `semver` (default) or `pep440`. Pull request runs use the
-PR head SHA and base branch. PR previews include the PR number and short head
-SHA under SemVer, or the workflow run ID under PEP 440. They never authorize
-release publication. Other branches use the profile's fallback build version.
+optional and defaults to the repository's default branch. Alpha, beta, and RC
+branches are opt-in. Pull request runs use the PR head SHA and base branch. Other
+unconfigured branches return a short-SHA fallback and cannot authorize
+publication.
 
 ## Inputs
 
@@ -39,29 +37,37 @@ release publication. Other branches use the profile's fallback build version.
 | ---------------- | -------- | ---------------------------------------------------------------- |
 | `github_token`   | Yes      | Read token with `contents`, `pull-requests`, and `statuses` read |
 | `stable_branch`  | No       | Stable branch; defaults to the repository default branch         |
-| `version_format` | No       | `semver` (default) or `pep440` build version profile             |
+| `alpha_branch`   | No       | Alpha candidate branch; empty disables the channel               |
+| `beta_branch`    | No       | Beta candidate branch; empty disables the channel                |
+| `rc_branch`      | No       | RC candidate branch; empty disables the channel                  |
+| `version_format` | No       | `semver` (default) or `pep440` version profile                   |
 
 ## Outputs
 
-| Output                 | Description                                                        |
-| ---------------------- | ------------------------------------------------------------------ |
-| `build_version`        | Version for this build; SHA fallback when no stable version exists |
-| `next_stable_version`  | Prospective stable base version, or empty                          |
-| `next_release_version` | Proposed version for a release, or empty                           |
-| `next_release_tag`     | Canonical `v<version>` tag for a release, or empty                 |
-| `release_required`     | `true` only for release branch pushes with a bump                  |
-| `commit_sha`           | Full source SHA                                                    |
-| `channel`              | `stable` on the stable branch, otherwise empty                     |
-| `bump`                 | `none`, `patch`, `minor`, or `major`                               |
-| `reason`               | `release`, `preview`, `no-changes`, or `unmatched-branch`          |
-| `release_plan`         | Version 1 JSON plan; contains no credentials                       |
+| Output                 | Description                                                          |
+| ---------------------- | -------------------------------------------------------------------- |
+| `build_version`        | Version for this build; SHA fallback when no stable version exists   |
+| `next_stable_version`  | Prospective stable base version, or empty                            |
+| `next_release_version` | Proposed version for a release, or empty                             |
+| `next_release_tag`     | Canonical SemVer tag for a release, or empty                         |
+| `release_required`     | `true` only for configured release branch pushes with a bump         |
+| `commit_sha`           | Full source SHA                                                      |
+| `channel`              | `stable`, `alpha`, `beta`, `rc`, or empty for an unconfigured branch |
+| `bump`                 | `none`, `patch`, `minor`, or `major`                                 |
+| `reason`               | `release`, `preview`, `no-changes`, or `unmatched-branch`            |
+| `release_plan`         | Version 1 JSON plan; contains no credentials                         |
 
 The planner maps `fix` to patch, `feat` to minor, and breaking changes to major.
 Ordinary messages are neutral; malformed Conventional Commit-like messages fail
 planning. Pull request runs use the PR head SHA and base branch, return a
-provisional preview version when a prospective stable version is available, and
-leave `next_release_version` and `next_release_tag` empty. With no prospective
-version, SemVer uses `sha-<short-sha>` and PEP 440 uses `0.0.0.dev<run-id>`.
-Git tags always use canonical SemVer (`v<version>`), regardless of the selected
-profile. Consumers can pass `release_plan` unchanged to later release actions.
-An unmatched branch never authorizes publication.
+provisional stable version when available, and leave `next_release_version` and
+`next_release_tag` empty. Consumers can pass `release_plan` unchanged to later
+release actions. SemVer PR previews include the PR number and short SHA; PEP 440
+previews use the workflow run ID. An unmatched branch never authorizes
+publication.
+
+Candidate counters are independent for each channel and prospective stable
+version. Candidate Git tags always use SemVer; `version_format: pep440` renders
+candidate outputs as `aN`, `bN`, or `rcN`. A candidate branch must contain the
+latest successful stable release. The repository default branch cannot be a
+candidate branch, and candidate branch assignments cannot overlap.

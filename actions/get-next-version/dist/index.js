@@ -27182,18 +27182,95 @@ function canonicalStableTag(version) {
   return version === null ? null : `v${version}`;
 }
 
+// src/get-next-version/channels.ts
+function resolveChannelConfiguration(args) {
+  const stableBranch = args.stableBranchInput || args.defaultBranch;
+  const alphaBranch = args.alphaBranchInput || null;
+  const betaBranch = args.betaBranchInput || null;
+  const rcBranch = args.rcBranchInput || null;
+  const versionFormat = parseVersionFormat(args.versionFormatInput);
+  const candidateBranches = [
+    ["alpha", alphaBranch],
+    ["beta", betaBranch],
+    ["rc", rcBranch]
+  ];
+  const assigned = /* @__PURE__ */ new Map();
+  for (const [channel, branch] of candidateBranches) {
+    if (!branch) continue;
+    if (branch === args.defaultBranch || branch === stableBranch) {
+      throw new Error(
+        `Invalid channel branch configuration: ${channel} cannot use stable/default branch ${branch}`
+      );
+    }
+    const existing = assigned.get(branch);
+    if (existing) {
+      throw new Error(
+        `Invalid channel branch configuration: ${existing} and ${channel} both use ${branch}`
+      );
+    }
+    assigned.set(branch, channel);
+  }
+  return {
+    stableBranch,
+    alphaBranch,
+    betaBranch,
+    rcBranch,
+    versionFormat
+  };
+}
+function channelForBranch(configuration, branch) {
+  if (branch === configuration.stableBranch) return "stable";
+  if (branch === configuration.alphaBranch) return "alpha";
+  if (branch === configuration.betaBranch) return "beta";
+  if (branch === configuration.rcBranch) return "rc";
+  return null;
+}
+
+// src/get-next-version/versions.ts
+var stableSemver = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+var candidateSemver = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.([1-9]\d*)$/;
+function parseStableSemver(version) {
+  const match = stableSemver.exec(version);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
+}
+function parseCandidateTag(tag) {
+  const match = candidateSemver.exec(tag);
+  if (!match) return null;
+  return {
+    base: `${match[1]}.${match[2]}.${match[3]}`,
+    channel: match[4],
+    counter: Number(match[5])
+  };
+}
+function compareStableVersions(left, right) {
+  const a = parseStableSemver(left);
+  const b = parseStableSemver(right);
+  if (!a || !b) throw new Error("Cannot compare invalid stable versions");
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+function canonicalCandidateTag(version, channel, counter) {
+  return `v${version}-${channel}.${counter}`;
+}
+function formatCandidateVersion(version, channel, counter, format) {
+  if (format === "semver") return `${version}-${channel}.${counter}`;
+  const suffix = channel === "alpha" ? "a" : channel === "beta" ? "b" : "rc";
+  return `${version}${suffix}${counter}`;
+}
+function formatStableVersion(version, _format) {
+  return version;
+}
+
 // src/get-next-version/index.ts
 var parser = new CommitParser({
   headerPattern: /^(\w+)(?:\(([^()\r\n]*)\))?(!)?: (.+)$/,
   headerCorrespondence: ["type", "scope", "breaking", "subject"]
 });
 var malformedConventionalHeader = /^[A-Za-z][A-Za-z0-9-]*(?:\(|!?:)/;
-var semverTag = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-function parseSemver(version) {
-  const match = semverTag.exec(version);
-  if (!match) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
 function stronger(left, right) {
   const strength = {
     none: 0,
@@ -27229,16 +27306,15 @@ function bumpForMessage(message) {
   return bump;
 }
 function nextVersion(base, bump) {
-  const parsed = parseSemver(base);
+  const parsed = parseStableSemver(base);
   if (!parsed) throw new Error(`Invalid stable release version: ${base}`);
-  const [major, minor, patch] = parsed;
+  const { major, minor, patch } = parsed;
   if (bump === "major") return `${major + 1}.0.0`;
   if (bump === "minor") return `${major}.${minor + 1}.0`;
   if (bump === "patch") return `${major}.${minor}.${patch + 1}`;
   return base;
 }
 function makePlan(args) {
-  const releaseVersion = args.releaseRequired ? args.nextStableVersion : null;
   return {
     schema_version: 1,
     repository: { owner: args.owner, name: args.name },
@@ -27251,10 +27327,10 @@ function makePlan(args) {
     },
     configuration: {
       stable_branch: args.stableBranch,
-      alpha_branch: null,
-      beta_branch: null,
-      rc_branch: null,
-      version_format: args.versionFormat
+      alpha_branch: args.configuration.alphaBranch,
+      beta_branch: args.configuration.betaBranch,
+      rc_branch: args.configuration.rcBranch,
+      version_format: args.configuration.versionFormat
     },
     history: {
       stable_base_version: args.stableBase,
@@ -27262,7 +27338,7 @@ function makePlan(args) {
       stable_release_sha: args.stableReleaseSha
     },
     decision: {
-      channel: args.targetBranch === args.stableBranch ? "stable" : null,
+      channel: args.channel,
       bump: args.bump,
       reason: args.reason,
       release_required: args.releaseRequired
@@ -27270,8 +27346,8 @@ function makePlan(args) {
     versions: {
       build_version: args.buildVersion,
       next_stable_version: args.nextStableVersion,
-      next_release_version: releaseVersion,
-      next_release_tag: canonicalStableTag(releaseVersion)
+      next_release_version: args.nextReleaseVersion,
+      next_release_tag: args.nextReleaseTag
     }
   };
 }
@@ -27294,8 +27370,15 @@ async function main() {
   const token = core.getInput("github_token", { required: true });
   const octokit = getOctokit(token, { baseUrl: context3.apiUrl });
   const repository = await octokit.rest.repos.get({ owner, repo: name });
-  const stableBranch = core.getInput("stable_branch") || repository.data.default_branch;
-  const versionFormat = parseVersionFormat(core.getInput("version_format"));
+  const configuration = resolveChannelConfiguration({
+    defaultBranch: repository.data.default_branch,
+    stableBranchInput: core.getInput("stable_branch"),
+    alphaBranchInput: core.getInput("alpha_branch"),
+    betaBranchInput: core.getInput("beta_branch"),
+    rcBranchInput: core.getInput("rc_branch"),
+    versionFormatInput: core.getInput("version_format")
+  });
+  const stableBranch = configuration.stableBranch;
   let sourceSha = context3.sha;
   let targetBranch = context3.ref.replace(/^refs\/heads\//, "");
   let pullRequest = null;
@@ -27312,7 +27395,8 @@ async function main() {
     sourceSha = details.data.head.sha;
     targetBranch = details.data.base.ref;
   }
-  if (targetBranch !== stableBranch) {
+  const channel = channelForBranch(configuration, targetBranch);
+  if (channel === null) {
     const unmatched = makePlan({
       owner,
       name,
@@ -27322,7 +27406,8 @@ async function main() {
       targetBranch,
       pullRequest,
       stableBranch,
-      versionFormat,
+      configuration,
+      channel,
       stableBase: null,
       stableReleaseTag: null,
       stableReleaseSha: null,
@@ -27330,11 +27415,13 @@ async function main() {
       reason: "unmatched-branch",
       releaseRequired: false,
       buildVersion: fallbackBuildVersion(
-        versionFormat,
+        configuration.versionFormat,
         sourceSha,
         context3.runId
       ),
-      nextStableVersion: null
+      nextStableVersion: null,
+      nextReleaseVersion: null,
+      nextReleaseTag: null
     });
     publishOutputs(unmatched);
     return;
@@ -27355,38 +27442,99 @@ async function main() {
   const commitPositions = new Map(
     commits.map((commit, index) => [commit.sha, index])
   );
-  const releaseCandidates = [];
+  const stableReleases = [];
+  const candidateReleases = [];
   for (const release of releases) {
-    if (release.draft || release.prerelease || !parseSemver(release.tag_name.replace(/^v/, "")))
-      continue;
+    if (release.draft) continue;
+    const stableVersion = release.prerelease ? null : release.tag_name.replace(/^v/, "");
+    const parsedCandidate = release.prerelease ? parseCandidateTag(release.tag_name) : null;
+    if (!stableVersion || !parseStableSemver(stableVersion)) {
+      if (!parsedCandidate) continue;
+    }
     const tag = release.tag_name;
     const taggedCommit = await octokit.rest.repos.getCommit({
       owner,
       repo: name,
       ref: tag
     });
-    const position = commitPositions.get(taggedCommit.data.sha);
-    if (position !== void 0) {
-      releaseCandidates.push({
+    const sha = taggedCommit.data.sha;
+    if (stableVersion && parseStableSemver(stableVersion)) {
+      stableReleases.push({
         tag,
-        sha: taggedCommit.data.sha,
-        version: tag.replace(/^v/, ""),
-        position
+        sha,
+        version: stableVersion,
+        position: commitPositions.get(sha)
       });
+    } else if (parsedCandidate) {
+      candidateReleases.push({ tag, sha, ...parsedCandidate });
     }
   }
-  releaseCandidates.sort((left, right) => left.position - right.position);
-  const baseline = releaseCandidates[0];
+  const reachableStableReleases = stableReleases.filter(
+    (release) => release.position !== void 0
+  );
+  const latestStableRelease = stableReleases.sort(
+    (left, right) => compareStableVersions(right.version, left.version)
+  )[0];
+  const preview = pullRequest !== null;
+  if (channel !== "stable" && !preview && latestStableRelease && latestStableRelease.position === void 0) {
+    throw new Error(
+      `Candidate branch ${targetBranch} is behind the latest stable release ${latestStableRelease.tag}`
+    );
+  }
+  reachableStableReleases.sort(
+    (left, right) => left.position - right.position
+  );
+  const baseline = channel === "stable" ? reachableStableReleases[0] : latestStableRelease;
   const stableBase = baseline?.version ?? "0.1.0";
-  const unreleasedCommits = baseline ? commits.slice(0, baseline.position) : commits;
+  const unreleasedCommits = baseline ? commits.slice(0, baseline.position ?? commits.length) : commits;
   let bump = "none";
   for (const commit of unreleasedCommits) {
     bump = stronger(bump, bumpForMessage(commit.commit.message));
   }
   const nextStableVersion = bump === "none" ? null : nextVersion(stableBase, bump);
-  const preview = pullRequest !== null;
   const releaseRequired = !preview && bump !== "none";
   const reason = preview ? "preview" : bump === "none" ? "no-changes" : "release";
+  let nextReleaseVersion = null;
+  let nextReleaseTag = null;
+  if (releaseRequired && nextStableVersion) {
+    if (channel === "stable") {
+      nextReleaseVersion = formatStableVersion(
+        nextStableVersion,
+        configuration.versionFormat
+      );
+      nextReleaseTag = canonicalStableTag(nextStableVersion);
+    } else {
+      const matchingRerun = candidateReleases.find(
+        (release) => release.channel === channel && release.sha === sourceSha
+      );
+      const counter = matchingRerun?.counter ?? Math.max(
+        0,
+        ...candidateReleases.filter(
+          (release) => release.channel === channel && release.base === nextStableVersion
+        ).map((release) => release.counter)
+      ) + 1;
+      const candidateBase = matchingRerun?.base ?? nextStableVersion;
+      nextReleaseVersion = formatCandidateVersion(
+        candidateBase,
+        channel,
+        counter,
+        configuration.versionFormat
+      );
+      nextReleaseTag = matchingRerun?.tag ?? canonicalCandidateTag(nextStableVersion, channel, counter);
+    }
+  }
+  const formattedNextStableVersion = nextStableVersion ? formatStableVersion(nextStableVersion, configuration.versionFormat) : null;
+  const buildVersion = preview ? previewBuildVersion({
+    format: configuration.versionFormat,
+    prospectiveVersion: formattedNextStableVersion,
+    pullRequest,
+    sha: sourceSha,
+    runId: context3.runId
+  }) : nextReleaseVersion ?? formattedNextStableVersion ?? fallbackBuildVersion(
+    configuration.versionFormat,
+    sourceSha,
+    context3.runId
+  );
   const plan = makePlan({
     owner,
     name,
@@ -27396,21 +27544,18 @@ async function main() {
     targetBranch,
     pullRequest,
     stableBranch,
-    versionFormat,
+    configuration,
+    channel,
     stableBase,
     stableReleaseTag: baseline?.tag ?? null,
     stableReleaseSha: baseline?.sha ?? null,
     bump,
     reason,
     releaseRequired,
-    buildVersion: preview ? previewBuildVersion({
-      format: versionFormat,
-      prospectiveVersion: nextStableVersion,
-      pullRequest,
-      sha: sourceSha,
-      runId: context3.runId
-    }) : nextStableVersion ?? fallbackBuildVersion(versionFormat, sourceSha, context3.runId),
-    nextStableVersion
+    buildVersion,
+    nextStableVersion: formattedNextStableVersion,
+    nextReleaseVersion,
+    nextReleaseTag
   });
   publishOutputs(plan);
 }

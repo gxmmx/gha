@@ -1,0 +1,45 @@
+name: Bug report
+description: Report behavior that is not working as expected
+title: "bug: "
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: Before submitting, check whether this behavior has already been reported.
+  - type: input
+    id: component
+    attributes:
+      label: Action or workflow
+      description: Which action or workflow is affected?
+      placeholder: actions/get-next-version or .github/workflows/release.yml
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Include relevant error output.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the relevant workflow configuration and event, with secrets removed.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Action version
+      description: Which tag or commit are you using?
+      placeholder: v0.2.1 or a commit SHA
+    validations:
+      required: false

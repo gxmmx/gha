@@ -27217,6 +27217,7 @@ function setOutputs(args) {
     "release_assets",
     JSON.stringify(
       (release.assets ?? []).map((asset) => ({
+        id: asset.id,
         name: asset.name,
         size: asset.size,
         digest: asset.digest ?? "",

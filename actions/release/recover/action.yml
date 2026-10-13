@@ -33,7 +33,7 @@ outputs:
   registry_receipt:
     description: Recorded external publication receipt for consumer reconciliation.
   release_assets:
-    description: JSON list of retained GitHub release assets and download URLs.
+    description: JSON list of retained GitHub release assets with IDs and download URLs.
   attempt_state:
     description: Current state, draft, abandoned, or published.
   abandoned_reason:

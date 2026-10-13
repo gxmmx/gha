@@ -111,6 +111,7 @@ async function runRecovery({
     body: `## Notes snapshot\n\n${marker}\n${JSON.stringify(record)}`,
     assets: [
       {
+        id: 9,
         name: "dist.tgz",
         size: 42,
         digest: `sha256:${"a".repeat(64)}`,
@@ -183,6 +184,7 @@ test("resume restores the original plan, notes, receipt, and staged asset manife
   );
   assert.deepEqual(JSON.parse(outputs.release_assets), [
     {
+      id: 9,
       name: "dist.tgz",
       size: 42,
       digest: `sha256:${"a".repeat(64)}`,

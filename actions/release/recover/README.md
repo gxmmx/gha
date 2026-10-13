@@ -46,17 +46,17 @@ attempt ID explicitly and must not derive a new release plan before recovery.
 
 ## Outputs
 
-| Output             | Description                                        |
-| ------------------ | -------------------------------------------------- |
-| `attempt_id`       | Durable attempt identity                           |
-| `release_id`       | GitHub release ID retaining the attempt            |
-| `tag`              | Immutable full-version tag                         |
-| `version`          | Recorded build and release version                 |
-| `source_sha`       | Exact source commit                                |
-| `release_plan`     | Recorded plan and original format profile          |
-| `release_notes`    | Snapshotted notes                                  |
-| `asset_manifest`   | Staged asset names, sizes, and checksums           |
-| `registry_receipt` | Recorded external artifact refs and digests        |
-| `release_assets`   | Existing release assets with browser download URLs |
-| `attempt_state`    | `draft`, `abandoned`, or `published`               |
-| `abandoned_reason` | Recorded reason, or empty                          |
+| Output             | Description                                                |
+| ------------------ | ---------------------------------------------------------- |
+| `attempt_id`       | Durable attempt identity                                   |
+| `release_id`       | GitHub release ID retaining the attempt                    |
+| `tag`              | Immutable full-version tag                                 |
+| `version`          | Recorded build and release version                         |
+| `source_sha`       | Exact source commit                                        |
+| `release_plan`     | Recorded plan and original format profile                  |
+| `release_notes`    | Snapshotted notes                                          |
+| `asset_manifest`   | Staged asset names, sizes, and checksums                   |
+| `registry_receipt` | Recorded external artifact refs and digests                |
+| `release_assets`   | Existing release assets with IDs and browser download URLs |
+| `attempt_state`    | `draft`, `abandoned`, or `published`                       |
+| `abandoned_reason` | Recorded reason, or empty                                  |
